@@ -125,8 +125,17 @@ export const PROVIDERS = {
     ],
   },
   custom: {
-    name: 'Свой OpenAI-совместимый', key: true, openai: true,
+    name: 'M-PM-!M-PM-2M-PM->M-PM-9 OpenAI-M-QM-^AM-PM->M-PM-2M-PM-<M-PM-5M-QM-^AM-QM-^BM-PM-8M-PM-<M-QM-^KM-PM-9', key: true, openai: true,
     endpoint: '', models: [],
+  },
+  zen: {
+    name: 'Zen AI', key: true, openai: true,
+    endpoint: 'https://api.zen.ai/v1/chat/completions',
+    models: [
+      { id: 'zen-30b', label: 'Zen 30B', free: false },
+      { id: 'zen-20b', label: 'Zen 20B', free: false },
+      { id: 'zen-8b', label: 'Zen 8B', free: false },
+    ],
   },
   local: {
     name: 'Local (Ollama / OpenWebUI)', key: true, openai: true,
