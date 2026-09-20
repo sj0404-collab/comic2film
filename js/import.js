@@ -49,7 +49,7 @@ async function extractZip(file, { onProgress }) {
     .sort(byNumName);
   const pages = [];
   for (let i = 0; i < names.length; i++) {
-    onProgress && onProgress(`Распаковка ${names[i]}`, (i + 1) / Math.max(1, names.length));
+    onProgress && onProgress((i + 1) / Math.max(1, names.length), `Распаковка ${names[i]}`);
     const blob = await zip.files[names[i]].async('blob');
     pages.push(toFile(blob, names[i]));
     if (pages.length > 700) break;
@@ -72,7 +72,7 @@ async function extractRar(file, { onProgress }) {
     const { fileHeader, extraction } = item;
     const uint8 = extraction;
     if (extraction === 'skipped' || !uint8) continue;
-    onProgress && onProgress(`Распаковка ${fileHeader.name}`, pages.length / Math.max(1, names.length));
+    onProgress && onProgress(pages.length / Math.max(1, names.length), `Распаковка ${fileHeader.name}`);
     const blob = new Blob([uint8], { type: guessMime(fileHeader.name) });
     pages.push(toFile(blob, fileHeader.name));
     if (pages.length > 700) break;
@@ -97,7 +97,7 @@ async function extractPdf(file, { onProgress }) {
   const pages = [];
   const maxDim = 1900;
   for (let i = 1; i <= doc.numPages && pages.length < 700; i++) {
-    onProgress && onProgress(`Растеризация страницы ${i}/${doc.numPages}`, i / doc.numPages);
+    onProgress && onProgress(i / doc.numPages, `Растеризация страницы ${i}/${doc.numPages}`);
     const page = await doc.getPage(i);
     const v0 = page.getViewport({ scale: 1 });
     const scale = Math.min(maxDim / v0.width, maxDim / v0.height, 2.2);
@@ -115,13 +115,13 @@ async function extractPdf(file, { onProgress }) {
 
 /* --- Разбор одного файла в страницы --- */
 export async function extractPages(file, { onProgress } = {}) {
-  onProgress && onProgress('Анализ файла…', 0);
+  onProgress && onProgress(0, 'Анализ файла…');
   const ext = extOf(file.name);
   if (ext === 'pdf' || file.type === 'application/pdf') return extractPdf(file, { onProgress });
   if (ext === 'zip' || ext === 'cbz') return extractZip(file, { onProgress });
   if (ext === 'rar' || ext === 'cbr') return extractRar(file, { onProgress });
   if (isImageFile(file)) {
-    onProgress && onProgress('Загрузка картинки…', 0.9);
+    onProgress && onProgress(0.9, 'Загрузка картинки…');
     return [file];
   }
   throw new Error('Формат не поддерживается для страниц: ' + ext);
@@ -155,7 +155,7 @@ export async function clipsFromAudio(blob, { threshold = 0.02, minSilence = 0.32
   const segs = sliceSegments(trimSilence(samples, sr).start > 0 ? samples.subarray(0) : samples, sr, {
     threshold, minSilence, minClip, maxClip,
   });
-  onProgress && onProgress('Нарезка выполнена', 1);
+  onProgress && onProgress(1, 'Нарезка выполнена');
   return { url, duration, sr, segs, samples };
 }
 

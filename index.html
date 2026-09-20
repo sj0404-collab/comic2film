@@ -170,7 +170,7 @@
         </div>
         <p class="muted">Формат: WebM сразу, MP4 / GIF перекодируются движком ffmpeg.wasm прямо в браузере.</p>
       </div>
-      <div class="card" id="render-status-card hidden">
+      <div class="card hidden" id="render-status-card">
         <h2>Ход сборки</h2>
         <div class="loadbar"><div id="render-fill" class="fill"></div></div>
         <div id="render-log" class="log"></div>
@@ -232,7 +232,7 @@
           <input type="text" id="opt-proxy" placeholder="https://ваш-прокси/speech?...">
           <label>Полный список голосов Edge с сервера</label>
           <button id="btnFetchVoices" class="btn mini">⬇ Загрузить все голоса с Microsoft</button>
-          <label class="muted">Примеры стова: </label>
+          <label class="muted">Примеры голосов: </label>
           <div id="voice-count" class="muted"></div>
         </div>
       </div>

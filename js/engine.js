@@ -19,7 +19,8 @@ export function estimateSpeakDur(text) {
  * Таймлайн
  * ================================================================ */
 export function buildTimeline(project) {
-  const gap = (project.settings.gap != null ? project.settings.gap : 350) / 1000;
+  const s = project.settings || {};
+  const gap = (s.gap != null ? s.gap : 350) / 1000;
   const items = [];
   let t = 0;
   project.pages.forEach((page, pi) => {
@@ -262,12 +263,13 @@ async function previewSession(project, canvas, opts, onProgress, abortToken) {
   const ctx = canvas.getContext('2d');
   const actx = opts.actx || new AudioContext();
   if (actx.state === 'suspended') await actx.resume();
+  const settings = project.settings || {};
 
   const { timeline, total, scheduleItem, master, started } = await prepareSession(
     project, actx,
     (p, m) => onProgress && onProgress(p * 0.5, m)
   );
-  const musicSrc = await startMusic(actx, project.settings, master);
+  const musicSrc = await startMusic(actx, settings, master);
 
   let stopped = false, raf = 0;
   return new Promise((resolve, reject) => {
@@ -281,7 +283,7 @@ async function previewSession(project, canvas, opts, onProgress, abortToken) {
       scheduleAhead(timeline, clock, scheduleItem);
       const item = currentItem(timeline, clock);
       const page = item.page;
-      const cam = cameraFor(item, clock, { w: page.w || 1, h: page.h || 1 }, { w, h }, project.settings.zoom || 'smart');
+      const cam = cameraFor(item, clock, { w: page.w || 1, h: page.h || 1 }, { w, h }, settings.zoom || 'smart');
       const img = pageImgSync(page.url);
       if (img && img.complete) {
         ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
@@ -289,14 +291,14 @@ async function previewSession(project, canvas, opts, onProgress, abortToken) {
       } else {
         ctx.fillStyle = '#111'; ctx.fillRect(0, 0, w, h);
       }
-      drawCaption(ctx, item, cam, { w, h }, project, project.settings);
+      drawCaption(ctx, item, cam, { w, h }, project, settings);
       const pct = Math.min(1, clock / total);
       onProgress && onProgress(0.5 + pct * 0.5, `предпросмотр: ${fmtDur(clock)} / ${fmtDur(total)}`);
       if (!stopped && clock < total) raf = requestAnimationFrame(onFrame);
       else finish();
     };
     const finish = () => {
-      if (stopped) return;
+      if (stopped) { resolve({ stopped: true }); return; }
       stopped = true; cancelAnimationFrame(raf);
       try { if (musicSrc) musicSrc.stop(); } catch (e) {}
       resolve({ stopped: false });
@@ -374,10 +376,11 @@ export async function renderAndRecord(project, opts, onProgress) {
   const fps = opts.fps || 30;
   const canvas = document.createElement('canvas');
   canvas.width = w; canvas.height = h;
+  const settings = project.settings || {};
 
   const actx = new AudioContext();
   const { timeline, total, master, dest, started, scheduleItem } = await prepareSession(project, actx, onProgress);
-  const musicSrc = await startMusic(actx, project.settings, master);
+  const musicSrc = await startMusic(actx, settings, master);
 
   const vstream = canvas.captureStream(fps);
   if (dest.stream.getAudioTracks().length) vstream.addTrack(dest.stream.getAudioTracks()[0]);
@@ -403,7 +406,7 @@ export async function renderAndRecord(project, opts, onProgress) {
         const item = currentItem(timeline, clock);
         if (!item) { raf = requestAnimationFrame(onFrame); return; }
         const page = item.page;
-        const cam = cameraFor(item, clock, { w: page.w || 1, h: page.h || 1 }, { w, h }, project.settings.zoom || 'smart');
+        const cam = cameraFor(item, clock, { w: page.w || 1, h: page.h || 1 }, { w, h }, settings.zoom || 'smart');
         const img = pageImgSync(page.url);
         if (img && img.complete) {
           cctx.fillStyle = '#000'; cctx.fillRect(0, 0, w, h);
@@ -411,7 +414,7 @@ export async function renderAndRecord(project, opts, onProgress) {
         } else {
           cctx.fillStyle = '#111'; cctx.fillRect(0, 0, w, h);
         }
-        drawCaption(cctx, item, cam, { w, h }, project, project.settings);
+        drawCaption(cctx, item, cam, { w, h }, project, settings);
         const pct = Math.min(1, clock / total);
         onProgress && onProgress(0.1 + pct * 0.85, `запись: ${fmtDur(clock)} / ${fmtDur(total)} • ${w}×${h}`);
         if (clock < total) raf = requestAnimationFrame(onFrame);
@@ -437,6 +440,7 @@ export async function renderAndRecord(project, opts, onProgress) {
 export async function renderAudioTrack(project, onProgress) {
   const actx = new AudioContext();
   const sr = 44100;
+  const settings = project.settings || {};
   const { items, total } = buildTimeline(project);
   const buffers = new Map();
   for (let i = 0; i < items.length; i++) {
@@ -459,10 +463,10 @@ export async function renderAudioTrack(project, onProgress) {
     const role = it.bubble && project.roles.find(r => r.id === it.bubble.roleId);
     mixAdd(pb.buffer, it.t + pb.offset, clampVol(role && role.volume));
   }
-  if (project.settings.musicBlob) {
+  if (settings.musicBlob) {
     try {
-      const m = await decodeToBuffer(actx, project.settings.musicBlob);
-      const g = (project.settings.mvol ?? 15) / 100 * 0.6;
+      const m = await decodeToBuffer(actx, settings.musicBlob);
+      const g = (settings.mvol ?? 15) / 100 * 0.6;
       // зациклить по длительности
       let pos = 0; while (pos < total) { mixAdd(m, pos, g); pos += m.duration; }
     } catch (e) {}

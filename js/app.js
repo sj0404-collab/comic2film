@@ -709,6 +709,7 @@ function renderMusicLabel() {
 async function doPreview() {
   if (!project.pages.length) { toast('Нет страниц', 'err'); return; }
   stopPreview();
+  project.settings = settings;
   const { w, h } = await resolveCanvas(settings.res, project);
   openModal('Предпросмотр', 'cv');
   const body = $('modal-body');
@@ -741,6 +742,7 @@ function stopPreview() {
 
 async function doRender() {
   if (!project.pages.length) { toast('Сначала добавьте страницы', 'err'); return; }
+  project.settings = settings;
   const voiced = allBubbles().filter(x => x.b.audio).length;
   if (!voiced) { toast('Реплики не озвучены — нажмите «Озвучить все»', 'err'); }
   const card = $('render-status-card');
@@ -748,6 +750,7 @@ async function doRender() {
   const fill = $('render-fill');
   const log = $('render-log');
   fill.style.width = '0%'; log.textContent = ''; $('dl-link')?.classList.add('hidden');
+  card.querySelectorAll('.render-extra').forEach((n) => n.remove());
   try {
     const out = await renderAndRecord(project, {
       res: settings.res, fps: settings.fps,
@@ -762,7 +765,7 @@ async function doRender() {
     a.download = name;
     a.textContent = '💾 Скачать ' + name + ' (' + fmtDur(out.duration) + ')';
     a.classList.remove('hidden');
-    const wrap = el('div', { class: 'row wrap', style: 'margin-top:8px' }, [
+    const wrap = el('div', { class: 'row wrap render-extra', style: 'margin-top:8px' }, [
       el('button', { class: 'btn mini', onclick: () => convMp4(out.blob, log) }, ['▶ MP4 (ffmpeg)']),
       el('button', { class: 'btn mini', onclick: () => convGif(out.blob, log) }, ['◆ GIF (ffmpeg)']),
     ]);
@@ -794,15 +797,17 @@ async function convGif(blob, log) {
 
 async function doAudioOnly() {
   if (!allBubbles().some(x => x.b.audio)) { toast('Сначала озвучьте реплики', 'err'); return; }
+  project.settings = settings;
   const card = $('render-status-card');
   card.classList.remove('hidden');
   const fill = $('render-fill');
   const log = $('render-log');
   fill.style.width = '0%'; log.textContent = '';
+  card.querySelectorAll('.render-extra').forEach((n) => n.remove());
   try {
     const out = await renderAudioTrack(project, (p, m) => { fill.style.width = Math.round(p * 100) + '%'; if (m) log.textContent = m; });
     download(out.blob, 'voicecomic_audio_' + Date.now() + '.wav');
-    const mp3Btn = el('button', { class: 'btn mini', style: 'margin-top:8px', onclick: async () => { log.textContent = 'mp3…'; const r = await wavToMp3(out.blob, (m) => log.textContent = m); download(r.blob, 'voicecomic_audio_' + Date.now() + '.mp3'); } }, ['▶ MP3']);
+    const mp3Btn = el('button', { class: 'btn mini render-extra', style: 'margin-top:8px', onclick: async () => { log.textContent = 'mp3…'; const r = await wavToMp3(out.blob, (m) => log.textContent = m); download(r.blob, 'voicecomic_audio_' + Date.now() + '.mp3'); } }, ['▶ MP3']);
     card.appendChild(mp3Btn);
     toast('Аудио-дорожка готова');
   } catch (e) { console.error(e); toast('Аудио: ' + e.message, 'err'); }
