@@ -128,6 +128,16 @@ export const PROVIDERS = {
     name: 'Свой OpenAI-совместимый', key: true, openai: true,
     endpoint: '', models: [],
   },
+  local: {
+    name: 'Local (Ollama / OpenWebUI)', key: true, openai: true,
+    endpoint: 'http://localhost:11434/api/chat',
+    models: [
+      { id: 'llama3.1:8b', label: 'Llama 3.1 8B', free: true },
+      { id: 'mistral:7b', label: 'Mistral 7B', free: true },
+      { id: 'phi3:medium', label: 'Phi-3 Medium', free: true },
+      { id: 'gemma2:9b', label: 'Gemma 2 9B', free: true },
+    ],
+  },
 };
 
 export function provider(id) { return PROVIDERS[id] || PROVIDERS.custom; }
