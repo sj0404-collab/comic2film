@@ -1,0 +1,20 @@
+{
+  "appId": "com.voicecomic.app",
+  "appName": "VoiceComic",
+  "webDir": ".",
+  "server": {
+    "androidScheme": "https",
+    "allowNavigation": ["*"]
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true,
+    "overrideUserAgent": "VoiceComic/1.0"
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}

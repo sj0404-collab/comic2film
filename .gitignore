@@ -1,0 +1,23 @@
+# deps
+node_modules/
+# build
+dist/
+build/
+# capacitor
+android/
+ios/
+# env
+.env
+.env.local
+# logs
+*.log
+npm-debug.log*
+# OS
+.DS_Store
+Thumbs.db
+# IDE
+.vscode/
+.idea/
+*.swp
+# test artifacts
+/tmp/opencode/
