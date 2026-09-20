@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0f1420">
+<title>VoiceComic — манга и комиксы в озвученное видео</title>
+<link rel="manifest" href="manifest/manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/ui.css">
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <div class="brand">
+      <span class="logo">🎬</span>
+      <div>
+        <div class="t1">VoiceComic</div>
+        <div class="t2" id="brand-sub">комиксы → озвученное видео</div>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <button id="btnInstall" class="icon ghost hidden" aria-label="Установить приложение">⬇</button>
+    <button id="btnNew" class="icon" aria-label="Новый проект">＋</button>
+    <button id="btnMenu" class="icon" aria-label="Меню">☰</button>
+  </header>
+
+  <main>
+    <!-- ================= ИМПОРТ ================= -->
+    <section id="tab-import" class="tab active">
+      <div class="card">
+        <h2>1 · Исходники</h2>
+        <p class="muted">Загрузите книгу, мангу, манхву, маньхуа или комикс
+          (PDF, CBZ, CBR, RAR, ZIP, картинки) — или аудио/видео для нарезки голосов.</p>
+        <div id="dropzone" class="dropzone">
+          <div class="dz-icon">📚</div>
+          <div class="dz-text">Перетащите файлы сюда или нажмите «Выбрать файлы»</div>
+          <input type="file" id="fileInput" multiple hidden>
+          <button id="btnPick" class="btn primary">Выбрать файлы</button>
+        </div>
+        <div class="hint">Тип файла определяется автоматически.
+          Многофайловые архивы обрабатываются на устройстве — данные никуда не уходят.</div>
+      </div>
+
+      <div id="imp-progress" class="card hidden">
+        <div class="loadbar"><div id="imp-progress-fill" class="fill"></div></div>
+        <div id="imp-progress-text" class="muted"></div>
+      </div>
+
+      <div id="imp-modes" class="hidden">
+        <div class="card">
+          <h2>Режим: <span id="imp-kind-label"></span></h2>
+          <div id="imp-actions" class="row wrap"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Библиотека</h2>
+        <div id="lib-mode-switch" class="seg hidden">
+          <button data-mode="pages" class="active">Страницы (N)</button>
+          <button data-mode="clips">Голосовые нарезки (N)</button>
+        </div>
+        <div id="pages-grid" class="grid"></div>
+        <div id="clips-list" class="list hidden"></div>
+        <div id="pages-empty" class="empty">Пока пусто — загрузите файлы сверху.</div>
+      </div>
+    </section>
+
+    <!-- ================= СЦЕНАРИЙ ================= -->
+    <section id="tab-script" class="tab">
+      <div class="card">
+        <div class="row head">
+          <h2>2 · Сценарий и роли</h2>
+          <button id="btnImprov" class="btn mini">✨ ИИ-разметка</button>
+        </div>
+        <div class="row wrap">
+          <button id="btnOcrAll" class="btn mini">🔎 Распознать текст (OCR)</button>
+          <button id="btnRolesAi" class="btn mini">🎭 Раздать роли (ИИ)</button>
+          <button id="btnTranslate" class="btn mini">🌐 Перевести (ИИ)</button>
+          <button id="btnTtsAll" class="btn mini">🗣 Озвучить все</button>
+          <button id="btnSubs" class="btn mini">⬇ Сценарий (txt/json)</button>
+        </div>
+        <p class="muted" id="script-status"></p>
+      </div>
+
+      <div class="card">
+        <div class="row head">
+          <h2>Реплики</h2>
+          <div class="seg small">
+            <button data-view="list" class="active">Список</button>
+            <button data-view="pages">По страницам</button>
+          </div>
+        </div>
+        <div id="script-list" class="list"></div>
+        <div id="script-pages" class="hidden"></div>
+        <div id="script-empty" class="empty">Сначала распознайте текст или напишите реплики вручную.</div>
+      </div>
+    </section>
+
+    <!-- ================= ГОЛОСА ================= -->
+    <section id="tab-roles" class="tab">
+      <div class="card">
+        <div class="row head"><h2>3 · Труппа / голоса</h2>
+          <button id="btnAddRole" class="btn mini">+ Персонаж</button></div>
+        <p class="muted">Каждому персонажу — голос Edge-TTS с интонацией (высота, темп, громкость)
+          или свой голосовой клип.</p>
+        <div id="roles-list" class="list"></div>
+      </div>
+      <div class="card">
+        <h2>Нарезки голосов</h2>
+        <p class="muted">Загрузите аудио/видео — оно будет разрезано на фразы по тишине.</p>
+        <label class="btn mini file">+ Аудио/видео → нарезки<input type="file" id="clipFile" accept="audio/*,video/*" hidden></label>
+        <label class="btn mini file">🎙 Записать голос (микрофон)<input type="file" id="recFile" accept="audio/*" capture hidden></label>
+        <div id="clips-grid" class="list"></div>
+      </div>
+    </section>
+
+    <!-- ================= РЕНДЕР ================= -->
+    <section id="tab-render" class="tab">
+      <div class="card">
+        <div class="row head"><h2>4 · Монтаж</h2>
+          <button id="btnPreview" class="btn mini">▶ Предпросмотр</button></div>
+        <div class="form">
+          <label>Разрешение</label>
+          <select id="opt-res">
+            <option value="1080x1920">1080×1920 · вертикаль (видео)</option>
+            <option value="1920x1080">1920×1080 · горизонталь</option>
+            <option value="1280x720">1280×720 · горизонталь (быстро)</option>
+            <option value="720x1280">720×1280 · вертикаль (быстро)</option>
+            <option value="1080x1080">1080×1080 · квадрат</option>
+            <option value="auto">По странице (авто)</option>
+          </select>
+          <label>Кадров в секунду</label>
+          <input type="range" id="opt-fps" min="12" max="60" step="6" value="30">
+          <span id="opt-fps-v" class="muted">30 fps</span>
+          <label>Движение камеры (Ken Burns)</label>
+          <select id="opt-zoom">
+            <option value="smart">Умный (на реплику / панорама в паузах)</option>
+            <option value="zoom">Медленный зум</option>
+            <option value="pan">Панорама слева→право</option>
+            <option value="none">Статично</option>
+          </select>
+          <label>Стиль реплик</label>
+          <select id="opt-caption">
+            <option value="bubble">Пузырь в панели (как в комиксе)</option>
+            <option value="sub">Субтитры снизу</option>
+            <option value="none">Без текста</option>
+          </select>
+          <label>Двуязычные субтитры</label>
+          <select id="opt-biling"><option value="orig">Только основной текст</option>
+            <option value="tr">Перевод + оригинал</option>
+            <option value="origtr">Оригинал + перевод</option></select>
+          <label>Пауза между репликами</label>
+          <input type="range" id="opt-gap" min="0" max="1500" step="50" value="350">
+          <span id="opt-gap-v" class="muted">0.35 c</span>
+          <label>Фоновая музыка (необязательно)</label>
+          <label class="btn mini file">🎵 Выбрать файл<input type="file" id="opt-music" accept="audio/*" hidden></label>
+          <label>Громкость музыки</label>
+          <input type="range" id="opt-mvol" min="0" max="100" step="5" value="15">
+          <span id="opt-mvol-v" class="muted">15%</span>
+        </div>
+        <div class="row wrap">
+          <button id="btnRender" class="btn primary big">🎬 Собрать видеофайл</button>
+          <button id="btnAudioOnly" class="btn">🎧 Только аудио-дорожка</button>
+        </div>
+        <p class="muted">Формат: WebM сразу, MP4 / GIF перекодируются движком ffmpeg.wasm прямо в браузере.</p>
+      </div>
+      <div class="card" id="render-status-card hidden">
+        <h2>Ход сборки</h2>
+        <div class="loadbar"><div id="render-fill" class="fill"></div></div>
+        <div id="render-log" class="log"></div>
+        <a id="dl-link" class="hidden"></a>
+      </div>
+    </section>
+
+    <!-- ================= НАСТРОЙКИ ================= -->
+    <section id="tab-settings" class="tab">
+      <div class="card">
+        <h2>5 · ИИ и движки</h2>
+        <p class="muted">Всё можно оставить по умолчанию — бесплатно и без ключей:
+          распознавание на устройстве (Tesseract), ИИ-разметка/перевод через Pollinations,
+          голоса Edge-TTS.</p>
+        <div class="form">
+          <label>OCR (текст с картинок)</label>
+          <select id="opt-ocr">
+            <option value="tesseract">Tesseract (локально, без интернета)</option>
+            <option value="pollinations">Pollinations vision (ИИ, без ключа)</option>
+            <option value="gemini">Google Gemini (ключ бесплатного тарифа)</option>
+          </select>
+          <label>Язык OCR / исходный язык комикса</label>
+          <select id="opt-lang">
+            <option value="rus">🇷🇺 Русский</option>
+            <option value="eng">🇬🇧 English</option>
+            <option value="chi_sim">🇨🇳 中文 (упрощ.)</option>
+            <option value="jpn">🇯🇵 日本語</option>
+            <option value="kor">🇰🇷 한국어</option>
+            <option value="spa">🇪🇸 Español</option>
+            <option value="fra">🇫🇷 Français</option>
+            <option value="deu">🇩🇪 Deutsch</option>
+            <option value="por">🇵🇹 Português</option>
+          </select>
+          <label>Переводить реплики на</label>
+          <select id="opt-trlang">
+            <option value="ru">🇷🇺 Русский</option>
+            <option value="en">🇬🇧 English</option>
+            <option value="donot">— не переводить</option>
+          </select>
+          <label>ИИ-провайдер (текст/перевод/роли)</label>
+          <select id="opt-ai">
+            <option value="pollinations">Pollinations — бесплатно, без ключа</option>
+            <option value="gemini">Google Gemini — ключ (есть free-уровень)</option>
+            <option value="custom">Свой OpenAI-совместимый</option>
+          </select>
+          <label>API-ключ (остаётся на устройстве)</label>
+          <input type="password" id="opt-key" placeholder="AIza... / sk-...">
+          <label>Адрес OpenAI-совместимого API</label>
+          <input type="text" id="opt-aiurl" placeholder="https://.../v1/chat/completions">
+          <label>Модель</label>
+          <input type="text" id="opt-aimodel" value="openai">
+          <label>Голосовой движок</label>
+          <select id="opt-voicebackend">
+            <option value="edge">Edge-TTS (онлайн, 500+ голосов)</option>
+            <option value="edge-proxy">Edge-TTS через прокси (URL ниже)</option>
+            <option value="browser">Голоса браузера (speechSynthesis)</option>
+          </select>
+          <label>Прокси Edge-TTS (если выбран выше)</label>
+          <input type="text" id="opt-proxy" placeholder="https://ваш-прокси/speech?...">
+          <label>Полный список голосов Edge с сервера</label>
+          <button id="btnFetchVoices" class="btn mini">⬇ Загрузить все голоса с Microsoft</button>
+          <label class="muted">Примеры стова: </label>
+          <div id="voice-count" class="muted"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Проект</h2>
+        <div class="row wrap">
+          <button id="btnSave" class="btn">💾 Сохранить (IndexedDB)</button>
+          <button id="btnExportJson" class="btn">⬇ Экспорт проекта</button>
+          <button id="btnImportJson" class="btn file">⬆ Импорт проекта<input type="file" id="jsonImport" accept=".json,.voicecomic" hidden></button>
+          <button id="btnReset" class="btn danger">Сбросить</button>
+        </div>
+        <p class="muted">Автосохранение включено. Установите приложение на главный экран
+          (Chrome → «Добавить на главный экран») — оно будет открываться как APK-приложение.</p>
+        <div id="pwa-status" class="muted"></div>
+      </div>
+    </section>
+  </main>
+
+  <nav id="tabsbar">
+    <button data-tab="import" class="active"><span class="ic">📥</span>Импорт</button>
+    <button data-tab="script"><span class="ic">🎬</span>Сценарий</button>
+    <button data-tab="roles"><span class="ic">🎭</span>Голоса</button>
+    <button data-tab="render"><span class="ic">🎞</span>Монтаж</button>
+    <button data-tab="settings"><span class="ic">⚙</span>Опции</button>
+  </nav>
+</div>
+
+<div id="modal" class="hidden">
+  <div id="modal-box">
+    <div id="modal-head"><b id="modal-title"></b><button id="modal-close">✕</button></div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<div id="toast" class="hidden"></div>
+<div id="bubbles-overlay" class="hidden"></div>
+
+<!-- внешние библиотеки (загружаются лениво по мере надобности) -->
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+  window.PDFJS && (window.pdfjsLib = window.pdfjsLib || window.PDFJS.pdfjsLib);
+  try {
+    const pv = pdfjsLib.version;
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  } catch (e) { /* попробуем позже */ }
+</script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,162 @@
+/* Разбор исходников: картинки, PDF, ZIP/CBZ, RAR/CBR, аудио/видео. */
+
+import { byNumName, isImageFile, extOf, IMAGE_EXT, loadScript, numKey } from './util.js';
+
+const PDFJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+const UNRAR_BASE = 'https://cdn.jsdelivr.net/npm/node-unrar-js@2.0.2/esm/js/';
+
+let _unrarPromise = null;
+
+function ensurePdfjs() {
+  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  return loadScript(PDFJS_CDN).then(() => {
+    if (!window.pdfjsLib) throw new Error('Не удалось загрузить PDF-движок');
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    return window.pdfjsLib;
+  });
+}
+
+async function ensureUnrar() {
+  if (_unrarPromise) return _unrarPromise;
+  _unrarPromise = (async () => {
+    const [{ default: makeUnrar }, { ExtractorData }] = await Promise.all([
+      import(/* @vite-ignore */ UNRAR_BASE + 'unrar.js'),
+      import(/* @vite-ignore */ UNRAR_BASE + 'ExtractorData.js'),
+    ]);
+    const unrar = await makeUnrar();
+    const createExtractorFromData = async ({ data, password = '' }) => {
+      const ex = new ExtractorData(unrar, data, password);
+      unrar.extractor = ex;
+      return ex;
+    };
+    return { createExtractorFromData };
+  })().catch(e => { _unrarPromise = null; throw e; });
+  return _unrarPromise;
+}
+
+function toFile(blob, name) {
+  return new File([blob], name, { type: blob.type || 'image/jpeg' });
+}
+
+/* --- Архивы ZIP/CBZ --- */
+async function extractZip(file, { onProgress }) {
+  const JSZipLib = window.JSZip;
+  if (!JSZipLib) throw new Error('Не загружен JSZip');
+  const zip = await JSZipLib.loadAsync(await file.arrayBuffer());
+  const names = Object.keys(zip.files)
+    .filter(n => !zip.files[n].dir && isImageFile({ name: n }))
+    .sort(byNumName);
+  const pages = [];
+  for (let i = 0; i < names.length; i++) {
+    onProgress && onProgress(`Распаковка ${names[i]}`, (i + 1) / Math.max(1, names.length));
+    const blob = await zip.files[names[i]].async('blob');
+    pages.push(toFile(blob, names[i]));
+    if (pages.length > 700) break;
+  }
+  return pages;
+}
+
+/* --- Архивы RAR/CBR --- */
+async function extractRar(file, { onProgress }) {
+  const { createExtractorFromData } = await ensureUnrar();
+  const state = await createExtractorFromData({ data: await file.arrayBuffer() });
+  const list = state.getFileList();
+  const names = [...list.fileHeaders]
+    .filter(h => !h.flags.directory && IMAGE_EXT.includes(extOf(h.name)))
+    .map(h => h.name)
+    .sort(byNumName);
+  const { files } = state.extract({ files: names });
+  const pages = [];
+  for (const item of files) {
+    const { fileHeader, extraction } = item;
+    const uint8 = extraction;
+    if (extraction === 'skipped' || !uint8) continue;
+    onProgress && onProgress(`Распаковка ${fileHeader.name}`, pages.length / Math.max(1, names.length));
+    const blob = new Blob([uint8], { type: guessMime(fileHeader.name) });
+    pages.push(toFile(blob, fileHeader.name));
+    if (pages.length > 700) break;
+  }
+  return pages;
+}
+
+function guessMime(name) {
+  const e = extOf(name);
+  if (e === 'png') return 'image/png';
+  if (e === 'webp') return 'image/webp';
+  if (e === 'gif') return 'image/gif';
+  if (e === 'bmp') return 'image/bmp';
+  if (e === 'avif') return 'image/avif';
+  return 'image/jpeg';
+}
+
+/* --- PDF --- */
+async function extractPdf(file, { onProgress }) {
+  const pdfjs = await ensurePdfjs();
+  const doc = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+  const pages = [];
+  const maxDim = 1900;
+  for (let i = 1; i <= doc.numPages && pages.length < 700; i++) {
+    onProgress && onProgress(`Растеризация страницы ${i}/${doc.numPages}`, i / doc.numPages);
+    const page = await doc.getPage(i);
+    const v0 = page.getViewport({ scale: 1 });
+    const scale = Math.min(maxDim / v0.width, maxDim / v0.height, 2.2);
+    const vp = page.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    const blob = await new Promise(r => canvas.toBlob(b => r(b), 'image/jpeg', 0.86));
+    pages.push(toFile(blob, `page_${String(i).padStart(3, '0')}.jpg`));
+  }
+  return pages;
+}
+
+/* --- Разбор одного файла в страницы --- */
+export async function extractPages(file, { onProgress } = {}) {
+  onProgress && onProgress('Анализ файла…', 0);
+  const ext = extOf(file.name);
+  if (ext === 'pdf' || file.type === 'application/pdf') return extractPdf(file, { onProgress });
+  if (ext === 'zip' || ext === 'cbz') return extractZip(file, { onProgress });
+  if (ext === 'rar' || ext === 'cbr') return extractRar(file, { onProgress });
+  if (isImageFile(file)) {
+    onProgress && onProgress('Загрузка картинки…', 0.9);
+    return [file];
+  }
+  throw new Error('Формат не поддерживается для страниц: ' + ext);
+}
+
+/* ================================================================
+ * Аудио: декодирование и нарезка по тишине
+ * ================================================================ */
+export async function decodeAudio(blob) {
+  const u = URL.createObjectURL(blob);
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ac = new AC();
+  try {
+    const ab = await blob.arrayBuffer();
+    const buf = await ac.decodeAudioData(ab);
+    const ch = buf.numberOfChannels;
+    const data = new Float32Array(buf.length);
+    for (let c = 0; c < ch; c++) { const d = buf.getChannelData(c); for (let i = 0; i < d.length; i++) data[i] += d[i] / ch; }
+    return { samples: data, sr: buf.sampleRate, url: u, duration: buf.duration };
+  } catch (e) {
+    URL.revokeObjectURL(u);
+    throw new Error('Не удалось прочитать звук: ' + e.message);
+  } finally {
+    ac.close().catch(() => {});
+  }
+}
+
+export async function clipsFromAudio(blob, { threshold = 0.02, minSilence = 0.32, minClip = 0.3, maxClip = 16, onProgress } = {}) {
+  const { samples, sr, url, duration } = await decodeAudio(blob);
+  const { sliceSegments, trimSilence } = await import('./util.js');
+  const segs = sliceSegments(trimSilence(samples, sr).start > 0 ? samples.subarray(0) : samples, sr, {
+    threshold, minSilence, minClip, maxClip,
+  });
+  onProgress && onProgress('Нарезка выполнена', 1);
+  return { url, duration, sr, segs, samples };
+}
+
+export { numKey };
