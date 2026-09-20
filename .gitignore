@@ -6,6 +6,7 @@ build/
 # capacitor
 android/
 ios/
+www/
 # env
 .env
 .env.local

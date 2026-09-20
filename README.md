@@ -62,16 +62,20 @@ python3 -m http.server 8080
 
 ## Сборка APK (Capacitor)
 
+Требуется Node ≥22, JDK 21, Android SDK (compileSdk 36).
+
 ```bash
-npm install -g @capacitor/cli @capacitor/core @capacitor/android
-npx cap init voicecomic com.example.voicecomic --web-dir=.
-npx cap add android
-npx cap copy
-npx cap open android
-# в Android Studio → Build → Build Bundle(s)/APK(s) → Build APK(s)
+npm install
+npm run build:www        # собирает www/ (без node_modules)
+npx cap sync android     # копирует www/ в android/app/src/main/assets/public
+cd android && ./gradlew assembleDebug
+# APK: android/app/build/outputs/apk/debug/app-debug.apk
+# Release-APK (подписан debug-ключом): ./gradlew assembleRelease
 ```
 
-`capacitor.config.json` уже в репозитории (webDir: '.', android: { allowMixedContent: true }).
+Готовый релизный APK всегда лежит в GitHub Release: `voicecomic-vX.Y.Z.apk`.
+
+`android/` и `www/` в `.gitignore` (генерируются), `capacitor.config.json` уже в репозитории (webDir: 'www', allowMixedContent: true).
 
 ## Требования
 
@@ -81,9 +85,11 @@ npx cap open android
 
 ## API и ключи
 
-- **Pollinations** — бесплатно, без ключа (`https://text.pollinations.ai/openai`). Список доступных бесплатных моделей (tier=anonymous) обновляется кнопкой «🔄 обновить список» в Опциях.
-- **Google Gemini** — нужен API-ключ (есть бесплатный тариф).
-- **Custom OpenAI-compatible** — свой endpoint + ключ.
+Встроен каталог из 13 провайдеров (Опции → «ИИ-провайдер»), у каждой модели отмечается статус:
+
+- **🆓 без ключа**: Pollinations — единственный провайдер, работающий совсем без ключа (`text.pollinations.ai/openai`). Список живых бесплатных моделей (tier=anonymous, сейчас движок GPT-OSS 20B и алиасы) обновляется кнопкой «🔄 обновить список».
+- **🔑 с ключом**: OpenRouter (есть `:free`-модели), OpenAI, Anthropic Claude, Google Gemini, Groq (free tier), DeepSeek, Mistral, Together AI, xAI Grok, Perplexity, Cerebras (free tier) — ключ вставляется в «Ключ API».
+- **Свой OpenAI-совместимый** — любой endpoint (Ollama, LM Studio, VPN-прокси) + ключ.
 - **Edge-TTS** — работает напрямую из браузера через WSS (Microsoft публичный эндпоинт), прокси опционально.
 - **Tesseract** — полностью локально (wasm загружается с CDN при первом OCR).
 

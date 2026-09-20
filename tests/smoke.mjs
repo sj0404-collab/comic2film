@@ -83,5 +83,15 @@ ok(clean.length === frames.length, 'cleanMp3Frames V2 roundtrip lossless');
 
 ok(estimatePauseMs('Привет!?') > estimatePauseMs('Привет'), 'estimatePauseMs с пунктуацией длиннее');
 
+/* Каталог провайдеров и моделей */
+const ai = await import('../js/ai.js');
+const { PROVIDERS, provider, isFreeModel } = ai;
+ok(Object.keys(PROVIDERS).length >= 10, 'каталог: >=10 провайдеров');
+ok(provider('pollinations').key === false, 'pollinations — без ключа');
+ok(provider('openai').key === true && provider('anthropic').key === true, 'openai/anthropic — с ключом');
+ok(provider('openai').models.length >= 4 && provider('anthropic').anthropic === true && provider('gemini').gemini === true, 'каталог моделей и форматов');
+ok(isFreeModel('pollinations', 'openai'), 'pollinations/openai помечена free');
+ok(ai.FREE_MODELS.length >= 1 && Array.isArray(ai.FREE_MODELS), 'FREE_MODELS непустой список');
+
 console.log(fails ? `\n${fails} FAILURES` : '\nALL PASS');
 process.exit(fails ? 1 : 0);

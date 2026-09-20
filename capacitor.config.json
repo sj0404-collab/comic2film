@@ -1,7 +1,7 @@
 {
   "appId": "com.voicecomic.app",
   "appName": "VoiceComic",
-  "webDir": ".",
+  "webDir": "www",
   "server": {
     "androidScheme": "https",
     "allowNavigation": ["*"]
