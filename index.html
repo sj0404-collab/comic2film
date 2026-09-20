@@ -216,12 +216,19 @@
             <option value="gemini">Google Gemini — ключ (есть free-уровень)</option>
             <option value="custom">Свой OpenAI-совместимый</option>
           </select>
-          <label>API-ключ (остаётся на устройстве)</label>
-          <input type="password" id="opt-key" placeholder="AIza... / sk-...">
-          <label>Адрес OpenAI-совместимого API</label>
-          <input type="text" id="opt-aiurl" placeholder="https://.../v1/chat/completions">
-          <label>Модель</label>
-          <input type="text" id="opt-aimodel" value="openai">
+          <div class="field" id="f-opt-key">
+            <label>API-ключ (остаётся на устройстве)</label>
+            <input type="password" id="opt-key" placeholder="AIza... / sk-...">
+          </div>
+          <div class="field" id="f-opt-aiurl">
+            <label>Адрес OpenAI-совместимого API</label>
+            <input type="text" id="opt-aiurl" placeholder="https://.../v1/chat/completions">
+          </div>
+          <div class="field" id="f-opt-aimodel">
+            <label>Модель <button type="button" id="btnRefreshModels" class="btn mini" style="padding:2px 8px;font-size:12px">🔄 обновить список</button></label>
+            <select id="opt-aimodel"></select>
+            <input type="text" id="opt-aimodel-custom" placeholder="своя модель (gemini-2.0-flash / gpt-4o-mini)">
+          </div>
           <label>Голосовой движок</label>
           <select id="opt-voicebackend">
             <option value="edge">Edge-TTS (онлайн, 500+ голосов)</option>
@@ -229,7 +236,9 @@
             <option value="browser">Голоса браузера (speechSynthesis)</option>
           </select>
           <label>Прокси Edge-TTS (если выбран выше)</label>
-          <input type="text" id="opt-proxy" placeholder="https://ваш-прокси/speech?...">
+          <div class="field" id="f-opt-proxy">
+            <input type="text" id="opt-proxy" placeholder="https://ваш-прокси/speech?...">
+          </div>
           <label>Полный список голосов Edge с сервера</label>
           <button id="btnFetchVoices" class="btn mini">⬇ Загрузить все голоса с Microsoft</button>
           <label class="muted">Примеры голосов: </label>

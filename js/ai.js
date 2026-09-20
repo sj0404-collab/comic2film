@@ -4,6 +4,30 @@
 
 export const POLLIMAGES = 'https://text.pollinations.ai';
 
+/* Бесплатные модели Pollinations (без ключа, tier=anonymous). Список
+ * обновляется с сервера (refreshFreeModels), тут — только запасной минимум. */
+export const FREE_MODELS_FALLBACK = ['openai'];
+export let FREE_MODELS = FREE_MODELS_FALLBACK.slice();
+
+export async function refreshFreeModels() {
+  try {
+    const r = await fetch(POLLIMAGES + '/models');
+    if (!r.ok) throw new Error('pollinations /models ' + r.status);
+    const list = await r.json();
+    const set = new Set();
+    for (const m of Array.isArray(list) ? list : []) {
+      if (m && m.tier === 'anonymous' && typeof m.name === 'string' && m.name) {
+        set.add(m.name);
+        for (const a of m.aliases || []) set.add(a);
+      }
+    }
+    FREE_MODELS = set.size ? [...set] : FREE_MODELS_FALLBACK.slice();
+  } catch (e) {
+    FREE_MODELS = FREE_MODELS_FALLBACK.slice();
+  }
+  return FREE_MODELS.slice();
+}
+
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 /* Вытащить валидный JSON из ответа (иногда рядом текст) */

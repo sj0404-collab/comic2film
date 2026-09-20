@@ -92,6 +92,8 @@ main{flex:1;padding:14px;padding-bottom:24px}
 /* forms */
 .form{display:flex;flex-direction:column;gap:7px}
 .form label{font-size:13px;color:var(--mut);margin-top:4px}
+.field{display:flex;flex-direction:column;gap:7px}
+.form .field label{font-size:13px;color:var(--mut);margin-top:4px}
 .form input, .form select{
   background:var(--bg2);border:1px solid var(--line);color:var(--txt);
   border-radius:10px;padding:9px 10px;font-size:15px;width:100%}

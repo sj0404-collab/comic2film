@@ -81,7 +81,7 @@ npx cap open android
 
 ## API и ключи
 
-- **Pollinations** — бесплатно, без ключа (`https://text.pollinations.ai/openai`).
+- **Pollinations** — бесплатно, без ключа (`https://text.pollinations.ai/openai`). Список доступных бесплатных моделей (tier=anonymous) обновляется кнопкой «🔄 обновить список» в Опциях.
 - **Google Gemini** — нужен API-ключ (есть бесплатный тариф).
 - **Custom OpenAI-compatible** — свой endpoint + ключ.
 - **Edge-TTS** — работает напрямую из браузера через WSS (Microsoft публичный эндпоинт), прокси опционально.

@@ -4,7 +4,7 @@ import {
   toast, uuid, download, fmtDur, loadImage,
 } from './util.js';
 import { idbSet, idbGet, idbDel, KEY_PROJECT, KEY_SETTINGS } from './store.js';
-import { analyzeRoles, translateLines } from './ai.js';
+import { analyzeRoles, translateLines, FREE_MODELS, refreshFreeModels } from './ai.js';
 import { extractPages, clipsFromAudio } from './import.js';
 import { ocrPage } from './ocr.js';
 import {
@@ -823,7 +823,7 @@ function bindSettings() {
   bindSel('opt-ai');
   bindInp('opt-key');
   bindInp('opt-aiurl');
-  bindInp('opt-aimodel');
+  setupModelUi();
   bindSel('opt-voicebackend');
   bindInp('opt-proxy');
   bindSel('opt-res');
@@ -852,6 +852,44 @@ function bindSel(id) {
     if (key === 'ai' || key === 'ocr') syncProviderUi();
   });
 }
+
+/* Селект + поле свободного ввода для «Модель»: для Pollinations — динамический
+ * список бесплатных (без ключа) моделей, для Gemini/Custom — свой текст. */
+function setupModelUi() {
+  const sel = $('opt-aimodel');
+  const custom = $('#opt-aimodel-custom');
+  populateModelSelect();
+  custom.value = settings.aimodel;
+  custom.dataset.typed = FREE_MODELS.includes(settings.aimodel) ? '0' : '1';
+  sel.addEventListener('change', () => { settings.aimodel = sel.value; custom.dataset.typed = '0'; custom.value = settings.aimodel; autoSaveTimer(); });
+  custom.addEventListener('input', () => { settings.aimodel = custom.value; custom.dataset.typed = '1'; autoSaveTimer(); });
+}
+
+function populateModelSelect() {
+  const sel = $('opt-aimodel');
+  sel.replaceChildren();
+  const list = FREE_MODELS.slice();
+  if (!list.includes(settings.aimodel)) list.unshift(settings.aimodel);
+  list.forEach((v) => sel.appendChild(el('option', { value: v }, [v + ' · free'])));
+  sel.value = list.includes(settings.aimodel) ? settings.aimodel : list[0];
+}
+
+function syncModelUi() {
+  const sel = $('opt-aimodel');
+  const custom = $('#opt-aimodel-custom');
+  if (custom.dataset.typed !== '1') custom.value = settings.aimodel;
+  sel.value = custom.dataset.typed === '1'
+    ? (FREE_MODELS.includes(settings.aimodel) ? settings.aimodel : (sel.options[0] ? sel.options[0].value : settings.aimodel))
+    : (FREE_MODELS.includes(settings.aimodel) ? settings.aimodel : sel.value);
+}
+
+async function refreshModelList() {
+  toast('Обновляю список бесплатных моделей…');
+  const list = await refreshFreeModels();
+  populateModelSelect();
+  syncModelUi();
+  toast('Бесплатных моделей без ключа: ' + list.length + ' (' + list.join(', ') + ')');
+}
 function bindInp(id) {
   const elEl = $(id);
   const key = id.replace(/^opt-/, '');
@@ -875,10 +913,12 @@ function bindRange(id, labelId, apply, fmt) {
 function syncProviderUi() {
   const gemini = settings.ai === 'gemini';
   const custom = settings.ai === 'custom';
-  $('opt-key').parentElement.hidden = !(gemini || custom);
-  $('opt-aiurl').parentElement.hidden = !custom;
-  $('opt-aimodel').parentElement.hidden = !(custom || gemini);
-  $('opt-proxy').parentElement.hidden = settings.voiceBackend !== 'edge-proxy';
+  const free = !gemini && !custom;
+  $('f-opt-key').hidden = !(gemini || custom);
+  $('f-opt-aiurl').hidden = !custom;
+  $('opt-aimodel').hidden = !free;
+  $('#opt-aimodel-custom').hidden = !(gemini || custom);
+  $('f-opt-proxy').hidden = settings.voiceBackend !== 'edge-proxy';
 }
 
 function renderVoiceCount() {
@@ -925,7 +965,7 @@ async function importProject(file) {
         }
       });
     }
-    bindSettings(); syncProviderUi(); renderAll();
+    bindSettings(); syncModelUi(); syncProviderUi(); renderAll();
     toast('Проект импортирован: роли и тексты восстановлены');
   } catch (e) { toast('Импорт: ' + e.message, 'err'); }
 }
@@ -935,7 +975,7 @@ function resetAll() {
   project.pages.forEach(p => { if (p.url) URL.revokeObjectURL(p.url); });
   project = defaultProject();
   settings = defaultSettings();
-  bindSettings(); syncProviderUi(); renderAll();
+  bindSettings(); syncModelUi(); syncProviderUi(); renderAll();
   toast('Сброс выполнен');
 }
 
@@ -1002,6 +1042,7 @@ async function wire() {
   $('btnAudioOnly').addEventListener('click', () => doAudioOnly());
 
   $('btnFetchVoices').addEventListener('click', () => fetchAllVoices());
+  $('btnRefreshModels').addEventListener('click', () => refreshModelList());
   $('btnSave').addEventListener('click', () => saveProject());
   $('btnExportJson').addEventListener('click', () => exportProject());
   $('jsonImport').addEventListener('change', (e) => { if (e.target.files[0]) importProject(e.target.files[0]); e.target.value = ''; });
@@ -1043,6 +1084,7 @@ async function init() {
     }
   } catch (e) { console.error('init:', e); }
   bindSettings();
+  syncModelUi();
   syncProviderUi();
   renderAll();
   wire();
