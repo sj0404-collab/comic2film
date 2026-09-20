@@ -1,0 +1,13 @@
+{
+  "name": "voicecomic",
+  "private": true,
+  "version": "0.1.0",
+  "description": "VoiceComic — мангу/комиксы в озвученное видео прямо в браузере (OCR + Edge-TTS + ffmpeg.wasm)",
+  "type": "module",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "serve": "npx serve .",
+    "test": "node tests/smoke.mjs",
+    "check": "node --check js/app.js && node --check js/util.js && node --check js/store.js && node --check js/ai.js && node --check js/import.js && node --check js/ocr.js && node --check js/voices.js && node --check js/engine.js"
+  }
+}

@@ -257,15 +257,24 @@ export function cleanMp3Frames(bytes) {
   while (i < n - 4) {
     if ((bytes[i] & 0xff) === 0xff && (bytes[i + 1] & 0xe0) === 0xe0) {
       const h = ((bytes[i] << 24) | (bytes[i + 1] << 16) | (bytes[i + 2] << 8) | bytes[i + 3]) >>> 0;
-      const ver = (h >> 19) & 3;      // 0=V25,1=V2,2=res,3=V1
-      const layer = (h >> 17) & 3;    // 1=L3
+      const ver = (h >> 19) & 3;      // 0=V2.5, 1=res, 2=V2, 3=V1
+      const layer = (h >> 17) & 3;    // 1=Layer III
       const brI = (h >> 12) & 0xf;
       const srI = (h >> 10) & 3;
       const pad = (h >> 9) & 1;
       const chan = (h >> 6) & 3;
-      if (ver !== 2 && layer === 1 && brI !== 0 && brI !== 0xf && srI !== 3) {
-        const br = ver === 3 ? MP3_BR_V1[brI] : MP3_SR_V2s ? (ver === 2 ? MP3_BR_V2[brI] : MP3_BR_V2[brI]) : 0;
-        const sr = ver === 3 ? MP3_SR_V1[srI] : ver === 2 ? MP3_SR_V2s[srI] : MP3_SR_V25[srI];
+      if ((ver === 3 || ver === 2 || ver === 0) && layer === 1 && brI !== 0 && brI !== 0xf && srI !== 3) {
+        let br, sr;
+        if (ver === 3) {
+          br = MP3_BR_V1[brI];
+          sr = MP3_SR_V1[srI];
+        } else if (ver === 2) {
+          br = MP3_BR_V2[brI];
+          sr = MP3_SR_V2s[srI];
+        } else { // ver === 0 (V2.5)
+          br = MP3_BR_V2[brI];
+          sr = MP3_SR_V25[srI];
+        }
         const len = Math.floor((ver === 3 ? 144 : 72) * br * 1000 / sr) + pad;
         if (br && sr && len > 0 && i + len <= n) {
           out.push(bytes.subarray(i, i + len));
