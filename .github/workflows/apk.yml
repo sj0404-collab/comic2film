@@ -1,0 +1,67 @@
+name: Build APK on tag
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Lint + tests
+        run: npm run check && npm test
+
+      - name: Build www
+        run: npm run build:www
+
+      - name: Add Android platform
+        run: npx cap add android
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Build debug APK
+        run: cd android && ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK=$(ls android/app/build/outputs/apk/debug/*.apk | head -1)
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" "$APK" \
+            --title "VoiceComic $VERSION — полный каталог провайдеров opencode (models.dev)" \
+            --notes "Сборка в GitHub Actions по тегу $GITHUB_REF_NAME.
+
+**Что нового:** полный каталог ИИ-провайдеров и моделей opencode (models.dev, 198 провайдеров / 6188 моделей), удалён фейковый Zen AI, багфиксы рендера (resample Edge 24→44.1кГц), нарезки голосов и индекса каталога.
+
+**APK (debug-sign):** $APK"
