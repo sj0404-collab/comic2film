@@ -35,6 +35,7 @@ function defaultSettings() {
     ocr: 'tesseract', detect: 'yolo', lang: 'rus', trlang: 'ru',
     ai: 'pollinations', key: '', aiurl: '', aimodel: 'openai', aiGap: 2500,
     voiceBackend: 'edge', proxy: '',
+    backendUrl: '', backendToken: '',
     gap: 350, res: '1080x1920', fps: 30, zoom: 'smart', caption: 'bubble', biling: 'orig',
     musicUrl: '', musicBlob: null, mvol: 15,
   };
@@ -871,6 +872,8 @@ function bindSettings() {
   setupModelUi();
   bindSel('opt-voicebackend');
   bindInp('opt-proxy');
+  bindInp('opt-backend-url');
+  bindInp('opt-backend-token');
   bindSel('opt-res');
   bindSel('opt-zoom');
   bindSel('opt-caption');
@@ -1181,6 +1184,7 @@ async function wire() {
   $('btnFetchVoices').addEventListener('click', () => fetchAllVoices());
   $('btnRefreshModels').addEventListener('click', () => refreshModelList());
   wireBubbleModel();
+  wireBackend();
   $('btnSave').addEventListener('click', () => saveProject());
   $('btnExportJson').addEventListener('click', () => exportProject());
   $('jsonImport').addEventListener('change', (e) => { if (e.target.files[0]) importProject(e.target.files[0]); e.target.value = ''; });
@@ -1208,6 +1212,97 @@ async function wire() {
   }
   $('pwa-status').textContent = deferredPrompt ? 'Приложение можно установить кнопкой ⬇ вверху.' : 'Работает в браузере / как PWA. Установка предлагается после второго посещения.';
 }
+
+/* Backend / Terminal */
+  let term = null;
+  let termFit = null;
+  let termLinks = null;
+  let termWs = null;
+
+  function wireBackend() {
+    const testBtn = $('btnBackendTest');
+    const termBtn = $('btnBackendOpenTerm');
+    const status = $('backend-status');
+    if (testBtn) testBtn.addEventListener('click', async () => {
+      status.textContent = 'Проверка…';
+      try {
+        const url = settings.backendUrl?.replace(/\/+$/, '');
+        if (!url) throw new Error('URL не задан');
+        const token = settings.backendToken;
+        if (!token) throw new Error('Токен не задан');
+        const res = await fetch(`${url.replace('ws://', 'http://').replace('wss://', 'https://')}/auth/me`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+        const me = await res.json();
+        status.textContent = `OK: ${me.login} (id: ${me.id})`;
+        status.style.color = 'var(--ok)';
+      } catch (e) {
+        status.textContent = 'Ошибка: ' + e.message;
+        status.style.color = 'var(--bad)';
+      }
+    });
+    if (termBtn) termBtn.addEventListener('click', openTerminal);
+  }
+
+  async function openTerminal() {
+    if (!settings.backendUrl || !settings.backendToken) {
+      toast('Задайте URL и токен бэкенда', 'err'); return;
+    }
+    const modal = $('term-modal');
+    const container = $('term-container');
+    container.innerHTML = '';
+    modal.classList.remove('hidden');
+
+    // init xterm
+    if (typeof Terminal === 'undefined') { toast('xterm.js не загружен', 'err'); return; }
+    term = new Terminal({
+      cursorBlink: true,
+      fontSize: 13,
+      fontFamily: '"JetBrains Mono", "Fira Code", monospace',
+      theme: { background: '#1e1e1e', foreground: '#d4d4d4' },
+      convertEol: true,
+    });
+    term.open(container);
+    if (typeof FitAddon !== 'undefined') {
+      termFit = new FitAddon.FitAddon();
+      term.loadAddon(termFit);
+      termFit.fit();
+    }
+    if (typeof WebLinksAddon !== 'undefined') {
+      termLinks = new WebLinksAddon.WebLinksAddon();
+      term.loadAddon(termLinks);
+    }
+    window.addEventListener('resize', () => termFit?.fit());
+
+    // WS connect
+    const wsUrl = `${settings.backendUrl.replace(/\/+$/, '')}/pty?token=${encodeURIComponent(settings.backendToken)}&cols=${term.cols}&rows=${term.rows}&cwd=${encodeURIComponent($('term-cwd').value || '/')}`;
+    termWs = new WebSocket(wsUrl);
+    termWs.binaryType = 'arraybuffer';
+    termWs.onopen = () => { toast('Терминал подключён'); };
+    termWs.onmessage = (ev) => { term.write(typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data)); };
+    termWs.onclose = () => { toast('Терминал отключён'); termWs = null; };
+    termWs.onerror = () => { toast('Ошибка WS', 'err'); };
+
+    term.onData((data) => { if (termWs?.readyState === WebSocket.OPEN) termWs.send(JSON.stringify({ type: 'input', data })); });
+
+    $('term-resize').onclick = () => {
+      const c = +$('term-cols').value, r = +$('term-rows').value;
+      termWs?.send(JSON.stringify({ type: 'resize', cols: c, rows: r }));
+      termFit?.fit();
+    };
+    $('term-close').onclick = closeTerminal;
+    $('term-modal').onclick = (e) => { if (e.target.id === 'term-modal') closeTerminal(); };
+  }
+
+  function closeTerminal() {
+    termWs?.close();
+    term?.dispose();
+    term = termFit = termLinks = termWs = null;
+    $('term-modal').classList.add('hidden');
+  }
+
+  window.onSettingsChanged = (s) => { settings = s; };
 
 async function init() {
   try {

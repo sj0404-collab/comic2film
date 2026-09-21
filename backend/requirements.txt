@@ -1,0 +1,8 @@
+# VoiceComic Backend — FastAPI + PTY + GitHub Token Auth
+
+fastapi
+uvicorn[standard]
+websockets
+httpx
+python-multipart
+psutil

@@ -142,3 +142,12 @@ a{color:var(--acc)}
 .msg.typing{opacity:.6}
 .chat-attachments .att{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:4px 8px;font-size:12px;margin:2px 4px 2px 0}
 .flex1{flex:1;min-width:0}
+
+/* terminal modal */
+#term-modal{position:fixed;inset:0;background:rgba(5,8,16,.85);z-index:70;display:flex;align-items:center;justify-content:center;padding:16px}
+#term-modal-box{background:#1e1e1e;border:1px solid var(--line);border-radius:12px;width:100%;max-width:1000px;height:80vh;max-height:80vh;display:flex;flex-direction:column;overflow:hidden}
+#term-modal-head{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap;gap:8px}
+#term-modal-head .mini{padding:4px 8px;font-size:12px}
+#term-container{flex:1;overflow:hidden;background:#1e1e1e}
+#term-container .xterm{height:100%}
+.mini{padding:4px 8px;font-size:12px}
