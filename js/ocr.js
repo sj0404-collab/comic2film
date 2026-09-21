@@ -3,6 +3,7 @@
 
 import { clusterBubbleWords, sortBubblesReadingOrder, loadImage } from './util.js';
 import { visionExtractLines } from './ai.js';
+import { detectBubbles } from './yolo.js';
 
 let _worker = null;
 let _workerLang = null;
@@ -46,12 +47,42 @@ async function makeCanvas(url, maxDim = 1600) {
 
 /** OCR одной страницы.
  * page: { url } — объекта с URL картинки.
- * settings: { ocr, aimodel, key, ai, aiGap }
+ * settings: { ocr, bounce, aimodel, key, ai, aiGap }
  */
 export async function ocrPage({ page, lang = 'rus', settings, onProgress }) {
   const canvas = await makeCanvas(page.url);
   onProgress(0.02);
   const langName = { rus: 'русский', eng: 'английский', chi_sim: 'китайский', jpn: 'японский', kor: 'корейский', spa: 'испанский', fra: 'французский', deu: 'немецкий', por: 'португальский' }[lang] || lang;
+
+  // YOLO-детекция облачков -> OCR в каждом боксе отдельно.
+  // Модель скачивается при первом использовании (прогресс внутри detectBubbles).
+  if (settings.detect === 'yolo' || settings.bubbleDetect === 'yolo') {
+    try {
+      onProgress(0.05);
+      const boxes = await detectBubbles(canvas, {
+        onProgress: (n) => onProgress(0.05 + n * 0.4),
+        onModel: () => onProgress(0.08, 'первое скачивание модели облачков (~108МБ)…'),
+      });
+      if (boxes.length) {
+        const bubbles = [];
+        let raw = '';
+        for (let i = 0; i < boxes.length; i++) {
+          const b = boxes[i];
+          onProgress(0.45 + (i / boxes.length) * 0.5, `OCR облачка ${i + 1}/${boxes.length}`);
+          const text = await ocrRegion(canvas, b, settings, lang);
+          if (!text) continue;
+          bubbles.push({ x: b.x, y: b.y, w: b.w, h: b.h, text: text.trim() });
+          raw += (raw ? '\n' : '') + text.trim();
+        }
+        onProgress(0.98);
+        if (bubbles.length) return { bubbles, raw, w: canvas.width, h: canvas.height };
+      }
+    } catch (e) {
+      onProgress(0.45);
+      console.warn('yolo detect:', e.message);
+      // падаем в обычный путь
+    }
+  }
 
   if (settings.ocr === 'tesseract' || !settings.ocr) {
     const worker = await ensureTesseractWorker(lang, onProgress);
@@ -64,10 +95,11 @@ export async function ocrPage({ page, lang = 'rus', settings, onProgress }) {
     return { bubbles, raw: data.text || '', w: canvas.width, h: canvas.height };
   }
 
-  // vision-провайдеры: точных боксов нет — раскладываем строки по полосам
+  // vision-провайдер из каталога: OCR-селект = конкретный ИИ-провайдер
   const dataURL = canvas.toDataURL('image/jpeg', 0.85);
   onProgress(0.2);
-  const lines = await visionExtractLines(settings, dataURL, langName);
+  const vsettings = { ...settings, ai: settings.ocr };
+  const lines = await visionExtractLines(vsettings, dataURL, langName);
   onProgress(0.9);
   const W = canvas.width, H = canvas.height;
   const per = Math.max(1, Math.ceil(lines.length / 5));
@@ -79,6 +111,24 @@ export async function ocrPage({ page, lang = 'rus', settings, onProgress }) {
     };
   });
   return { bubbles, raw: lines.join('\n'), w: W, h: H };
+}
+
+/* OCR внутри бокса облачка (b: {x,y,w,h} в пикселях канваса). */
+async function ocrRegion(canvas, b, settings, lang) {
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(b.w));
+  c.height = Math.max(1, Math.round(b.h));
+  c.getContext('2d').drawImage(canvas, b.x, b.y, c.width, c.height, 0, 0, c.width, c.height);
+  if (settings.ocr === 'tesseract' || !settings.ocr) {
+    const worker = await ensureTesseractWorker(lang, () => {});
+    const { data } = await worker.recognize(c);
+    return data.text || '';
+  }
+  const dataURL = c.toDataURL('image/jpeg', 0.9);
+  const vsettings = { ...settings, ai: settings.ocr };
+  const lines = await visionExtractLines(vsettings, dataURL,
+    { rus: 'русский', eng: 'английский', chi_sim: 'китайский', jpn: 'японский', kor: 'корейский', spa: 'испанский', fra: 'французский', deu: 'немецкий', por: 'португальский' }[lang] || lang);
+  return Array.isArray(lines) ? lines.join('\n') : String(lines || '');
 }
 
 export async function tesseractLanguages() {

@@ -188,10 +188,19 @@
         <div class="form">
           <label>OCR (текст с картинок)</label>
           <select id="opt-ocr">
-            <option value="tesseract">Tesseract (локально, без интернета)</option>
-            <option value="pollinations">Pollinations vision (ИИ, без ключа)</option>
-            <option value="gemini">Google Gemini (ключ бесплатного тарифа)</option>
+            <option value="tesseract">Tesseract (локально, без интернета) — по умолчанию</option>
           </select>
+          <p class="muted" style="margin-top:4px">Или любой vision-провайдер из каталога opencode (100+): распознавание через ИИ.</p>
+          <label>Детекция облачков (пузырей)</label>
+          <select id="opt-detect">
+            <option value="yolo">YOLOv8 — нейросеть находит пузыри (по умолчанию)</option>
+            <option value="none">Не искать пузыри (распознавать всю страницу)</option>
+          </select>
+          <p class="muted" style="margin-top:4px">YOLOv8m-seg, обучена на манге/комиксах. Модель (~108МБ) скачивается при первом использовании и хранится на устройстве.</p>
+          <div class="row wrap" style="margin-top:6px">
+            <button id="btnBubbleModel" class="btn mini">⬇ Скачать модель облачков сейчас</button>
+            <span id="bubble-model-status" class="muted"></span>
+          </div>
           <label>Язык OCR / исходный язык комикса</label>
           <select id="opt-lang">
             <option value="rus">🇷🇺 Русский</option>

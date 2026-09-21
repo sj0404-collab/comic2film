@@ -85,9 +85,12 @@ ok(estimatePauseMs('Привет!?') > estimatePauseMs('Привет'), 'estimat
 
 /* Каталог провайдеров и моделей */
 const ai = await import('../js/ai.js');
-const { PROVIDERS, provider, isFreeModel, MODELS_DEV } = ai;
+const { PROVIDERS, provider, isFreeModel, MODELS_DEV, providerHasVision } = ai;
 ok(Object.keys(PROVIDERS).length >= 10, 'каталог: >=10 провайдеров');
 ok(Object.keys(MODELS_DEV).length >= 150, 'models.dev: >=150 провайдеров из opencode npm');
+ok(providerHasVision('pollinations'), 'pollinations помечен как vision');
+ok([...Object.keys(PROVIDERS)].filter((id) => providerHasVision(id)).length >= 50, 'vision-провайдеров в каталоге >= 50 (для OCR-селекта)');
+ok(Object.keys(PROVIDERS).every((id) => provider(id).vision === undefined || provider(id).vision === true || provider(id).vision === false, 'vision-флаг корректен'));
 ok(provider('pollinations').key === false && !provider('pollinations').endpoint.includes('zen'), 'pollinations — без ключа');
 ok(provider('openai').key === true && provider('anthropic').key === true, 'openai/anthropic — с ключом');
 ok(provider('openai').models.length >= 4 && provider('anthropic').anthropic === true && provider('gemini').gemini === true, 'каталог моделей и форматов');

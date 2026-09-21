@@ -7,6 +7,7 @@ import { idbSet, idbGet, idbDel, KEY_PROJECT, KEY_SETTINGS } from './store.js';
 import { analyzeRoles, translateLines, FREE_MODELS, refreshFreeModels, PROVIDERS, provider, isFreeModel } from './ai.js';
 import { extractPages, clipsFromAudio } from './import.js';
 import { ocrPage } from './ocr.js';
+import { bubbleModelStatus, bubbleModelTargetBytes, downloadBubbleModel, bubbleModelClear } from './yolo.js';
 import {
   synthesizeLine, voicesForLang, allVoices, fetchVoicesFromMicrosoft,
 } from './voices.js';
@@ -30,7 +31,7 @@ const PROJECT_NAME = 'VoiceComic';
  * ================================================================ */
 function defaultSettings() {
   return {
-    ocr: 'tesseract', lang: 'rus', trlang: 'ru',
+    ocr: 'tesseract', detect: 'yolo', lang: 'rus', trlang: 'ru',
     ai: 'pollinations', key: '', aiurl: '', aimodel: 'openai', aiGap: 2500,
     voiceBackend: 'edge', proxy: '',
     gap: 350, res: '1080x1920', fps: 30, zoom: 'smart', caption: 'bubble', biling: 'orig',
@@ -858,7 +859,9 @@ async function doAudioOnly() {
  * ================================================================ */
 function bindSettings() {
   populateProviderSelect();
+  populateOcrSelect();
   bindSel('opt-ocr');
+  bindSel('opt-detect');
   bindSel('opt-lang');
   bindSel('opt-trlang');
   bindSel('opt-ai');
@@ -912,6 +915,23 @@ function populateProviderSelect() {
   });
   if (!PROVIDERS[settings.ai]) settings.ai = 'pollinations';
   sel.value = settings.ai;
+}
+
+/* OCR-селект: Tesseract (всегда) + все vision-провайдеры каталога. */
+function populateOcrSelect() {
+  const sel = $('opt-ocr');
+  const cur = sel.value || settings.ocr || 'tesseract';
+  sel.replaceChildren();
+  sel.appendChild(el('option', { value: 'tesseract' }, ['Tesseract (локально, без интернета)']));
+  const vision = Object.entries(PROVIDERS)
+    .filter(([id, p]) => providerHasVision(id))
+    .sort((a, b) => a[1].name.localeCompare(b[1].name, 'ru'));
+  let hasCur = 'tesseract' === cur;
+  vision.forEach(([id, p]) => {
+    sel.appendChild(el('option', { value: id }, [id + ' — ' + p.name.split(' ·')[0] + (p.key === false ? ' (без ключа)' : '')]));
+    if (id === cur) hasCur = true;
+  });
+  sel.value = hasCur ? cur : 'tesseract';
 }
 
 /* Селект моделей из каталога провайдера + поле свободного ввода. */
@@ -1009,6 +1029,43 @@ async function fetchAllVoices() {
     renderVoiceCount(); renderRoles();
     toast('Голосов на сервере: ' + list.length);
   } catch (e) { toast('voices: ' + e.message, 'err'); }
+}
+
+/* Статус модели облачков + скачивание по кнопке */
+async function renderBubbleModelStatus() {
+  const el = $('bubble-model-status');
+  if (!el) return;
+  const st = await bubbleModelStatus();
+  if (st.ready) el.textContent = 'модель на устройстве (' + (st.bytes / 1048576).toFixed(1) + 'МБ)';
+  else el.textContent = 'не скачана (около ' + (bubbleModelTargetBytes() / 1048576).toFixed(0) + 'МБ)';
+}
+
+async function wireBubbleModel() {
+  const btn = $('btnBubbleModel');
+  if (!btn) return;
+  renderBubbleModelStatus();
+  btn.addEventListener('click', async () => {
+    const st = await bubbleModelStatus();
+    if (st.ready) {
+      if (!confirm('Модель уже скачана. Удалить и скачать заново?')) return;
+      await bubbleModelClear();
+    }
+    btn.disabled = true;
+    btn.textContent = '⬇ Скачивание…';
+    setProgress(0, 'Скачиваю модель облачков (108МБ)…');
+    $('imp-progress').classList.remove('hidden');
+    try {
+      await downloadBubbleModel((p) => {
+        setProgress(p, 'Скачиваю модель облачков: ' + Math.round(p * 100) + '%');
+      });
+      toast('Модель облачков скачана');
+    } catch (e) { toast('Скачивание: ' + e.message, 'err'); }
+    $('imp-progress').classList.add('hidden');
+    setProgress(0);
+    btn.disabled = false;
+    btn.textContent = '⬇ Скачать модель облачков сейчас';
+    renderBubbleModelStatus();
+  });
 }
 
 async function saveProject() { try { await saveToDB(); toast('Сохранено в IndexedDB'); } catch (e) { toast('Ошибка сохранения: ' + e.message, 'err'); } }
@@ -1122,6 +1179,7 @@ async function wire() {
 
   $('btnFetchVoices').addEventListener('click', () => fetchAllVoices());
   $('btnRefreshModels').addEventListener('click', () => refreshModelList());
+  wireBubbleModel();
   $('btnSave').addEventListener('click', () => saveProject());
   $('btnExportJson').addEventListener('click', () => exportProject());
   $('jsonImport').addEventListener('change', (e) => { if (e.target.files[0]) importProject(e.target.files[0]); e.target.value = ''; });

@@ -8,7 +8,7 @@
     "start": "python3 -m http.server 8080",
     "serve": "npx serve .",
     "test": "node tests/smoke.mjs",
-    "check": "node --check js/app.js && node --check js/util.js && node --check js/store.js && node --check js/ai.js && node --check js/models.dev.js && node --check js/import.js && node --check js/ocr.js && node --check js/voices.js && node --check js/engine.js",
+    "check": "node --check js/app.js && node --check js/util.js && node --check js/store.js && node --check js/ai.js && node --check js/models.dev.js && node --check js/import.js && node --check js/ocr.js && node --check js/voices.js && node --check js/engine.js && node --check js/yolo.js",
     "build:www": "node build-www.mjs",
     "cap:sync": "npm run build:www && cap sync android",
     "apk": "npm run cap:sync && cd android && ./gradlew assembleDebug"

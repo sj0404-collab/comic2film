@@ -45,17 +45,20 @@ for (const id of Object.keys(data)) {
     ? (api.endsWith(suffix) ? api : api + suffix)
     : '';
   const models = [];
+  let vision = false; // хоть одна модель принимает изображения (image либо аналог)
   for (const mid of Object.keys(p.models || {})) {
     const m = p.models[mid];
     const om = (m.modalities && m.modalities.output) || [];
     if (om.length && !om.includes('text')) continue;
+    const im = (m.modalities && m.modalities.input) || [];
+    if (!vision && im.includes('image')) vision = true;
     const cost = m.cost;
     const free = !!(cost && cost.input === 0 && cost.output === 0);
     const label = m.name && m.name !== mid ? m.name : undefined;
     models.push(label ? [mid, free ? 1 : 0, label] : [mid, free ? 1 : 0]);
   }
   if (!models.length) continue;
-  out[id] = { name: p.name || id, key: true, fmt, endpoint, models };
+  out[id] = { name: p.name || id, key: true, fmt, endpoint, vision: vision || undefined, models };
   nprov++;
   nmod += models.length;
 }

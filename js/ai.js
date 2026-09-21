@@ -12,7 +12,7 @@ export const POLLIMAGES = 'https://text.pollinations.ai';
  * ================================================================ */
 export const CURATED_PROVIDERS = {
   pollinations: {
-    name: 'Pollinations · без ключа', key: false, openai: true,
+    name: 'Pollinations · без ключа', key: false, openai: true, vision: true,
     endpoint: POLLIMAGES + '/openai',
     models: [
       { id: 'openai-fast', free: true },
@@ -23,7 +23,7 @@ export const CURATED_PROVIDERS = {
     ],
   },
   openrouter: {
-    name: 'OpenRouter · free/paid', key: true, openai: true,
+    name: 'OpenRouter · free/paid', key: true, openai: true, vision: true,
     endpoint: 'https://openrouter.ai/api/v1/chat/completions',
     headers: { 'HTTP-Referer': 'https://github.com/sj0404-collab/comic2film', 'X-Title': 'VoiceComic' },
     models: [
@@ -159,6 +159,7 @@ function catalog() {
     if (all[id]) {
       const have = new Set(all[id].models.map((m) => m.id));
       for (const m of mdev) if (!have.has(m.id)) all[id].models.push(m);
+      if (d.vision && !all[id].vision) all[id].vision = true;
     } else if (d.endpoint) {
       all[id] = {
         name: d.name,
@@ -166,6 +167,7 @@ function catalog() {
         openai: d.fmt === 'openai',
         anthropic: d.fmt === 'anthropic',
         endpoint: d.endpoint,
+        vision: d.vision === true,
         models: mdev,
       };
     }
@@ -184,6 +186,11 @@ export function isFreeModel(pid, mid) {
 }
 
 export function providerNeedsKey(pid) { return provider(pid).key === true; }
+
+/* Умеет ли провайдер обрабатывать картинки (vision). */
+export function providerHasVision(pid) {
+  return provider(pid).vision === true;
+}
 
 /* Бесплатные модели Pollinations (tier=anonymous). Динамически обновляется. */
 export const FREE_MODELS_FALLBACK = ['openai'];

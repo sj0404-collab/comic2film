@@ -1,4 +1,4 @@
-const CACHE = 'voicecomic-v2';
+const CACHE = 'voicecomic-v3';
 const CORE = [
   './',
   'index.html',
@@ -11,6 +11,7 @@ const CORE = [
   'js/ocr.js',
   'js/voices.js',
   'js/engine.js',
+  'js/yolo.js',
   'js/app.js',
   'manifest/manifest.webmanifest',
   'icon.svg'
