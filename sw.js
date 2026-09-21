@@ -1,4 +1,4 @@
-const CACHE = 'voicecomic-v1';
+const CACHE = 'voicecomic-v2';
 const CORE = [
   './',
   'index.html',
