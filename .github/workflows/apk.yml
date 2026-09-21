@@ -51,35 +51,6 @@ jobs:
       - name: Sync Capacitor
         run: npx cap sync android
 
-      - name: Start cloudflared tunnel
-        run: |
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-          sudo dpkg -i cloudflared-linux-amd64.deb
-          cloudflared tunnel --url http://localhost:8000 --no-autoupdate > tunnel.log 2>&1 &
-          echo "Tunnel PID: $!"
-          sleep 5
-          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' tunnel.log | head -1)
-          echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
-          echo "Tunnel URL: $TUNNEL_URL"
-
-      - name: Start backend
-        env:
-          VOICECOMIC_WORKSPACE: ${{ runner.temp }}/voicecomic-workspace
-          PORT: 8000
-        run: |
-          mkdir -p ${{ runner.temp }}/voicecomic-workspace
-          cd backend
-          python main.py > backend.log 2>&1 &
-          echo "Backend PID: $!"
-          sleep 3
-          curl -s http://localhost:8000/health
-
-      - name: Inject tunnel URL into app config
-        if: env.TUNNEL_URL != ''
-        run: |
-          echo "window.__VOICECOMIC_TUNNEL__ = '${TUNNEL_URL}';" > www/js/tunnel-config.js
-          echo "Tunnel config written"
-
       - name: Build debug APK
         run: cd android && ./gradlew assembleDebug --no-daemon
 
@@ -101,9 +72,9 @@ jobs:
           NOTES=$(printf '%s\n' \
             "Сборка в GitHub Actions по git-тегу $GITHUB_REF_NAME." \
             "" \
-            "**Что нового:** полный каталог ИИ-провайдеров и моделей opencode (models.dev, 198 провайдеров / 6188 моделей), удалён фейковый Zen AI, багфиксы рендера (resample Edge 24→44.1кГц), нарезки голосов и индекса каталога." \
+            "**Что нового:** чат с ИИ (сессии, файлы), PTY терминал (xterm.js), FastAPI бэкенд с GitHub PAT авторизацией, YOLOv8 model picker (n/s/m/l/x + custom), cloudflared туннель настраивается пользователем." \
             "" \
             "**APK (debug-sign):** voicecomic-$GITHUB_REF_NAME.apk")
           gh release create "$GITHUB_REF_NAME" "voicecomic-$GITHUB_REF_NAME.apk" \
-            --title "VoiceComic $VERSION — все провайдеры opencode (models.dev)" \
+            --title "VoiceComic $VERSION — чат, терминал, бэкенд, YOLO picker" \
             --notes "$NOTES"
