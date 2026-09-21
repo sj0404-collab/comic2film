@@ -58,10 +58,12 @@ jobs:
         run: |
           APK=$(ls android/app/build/outputs/apk/debug/*.apk | head -1)
           VERSION="${GITHUB_REF_NAME#v}"
+          NOTES=$(printf '%s\n' \
+            "Сборка в GitHub Actions по git-тегу $GITHUB_REF_NAME." \
+            "" \
+            "**Что нового:** полный каталог ИИ-провайдеров и моделей opencode (models.dev, 198 провайдеров / 6188 моделей), удалён фейковый Zen AI, багфиксы рендера (resample Edge 24→44.1кГц), нарезки голосов и индекса каталога." \
+            "" \
+            "**APK (debug-sign):** $APK")
           gh release create "$GITHUB_REF_NAME" "$APK" \
-            --title "VoiceComic $VERSION — полный каталог провайдеров opencode (models.dev)" \
-            --notes "Сборка в GitHub Actions по тегу $GITHUB_REF_NAME.
-
-**Что нового:** полный каталог ИИ-провайдеров и моделей opencode (models.dev, 198 провайдеров / 6188 моделей), удалён фейковый Zen AI, багфиксы рендера (resample Edge 24→44.1кГц), нарезки голосов и индекса каталога.
-
-**APK (debug-sign):** $APK"
+            --title "VoiceComic $VERSION — все провайдеры opencode (models.dev)" \
+            --notes "$NOTES"
