@@ -10,7 +10,9 @@
     "allowMixedContent": true,
     "captureInput": true,
     "webContentsDebuggingEnabled": true,
-    "overrideUserAgent": "VoiceComic/1.0"
+    "overrideUserAgent": "VoiceComic/1.0",
+    "backgroundColor": "#0f1420",
+    "webViewAssetPaths": ["www/*"]
   },
   "plugins": {
     "CapacitorHttp": {
