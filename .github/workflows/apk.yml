@@ -1,7 +1,8 @@
-name: Build APK on tag
+name: Build APK
 
 on:
   push:
+    branches: ['main']
     tags: ['v*']
   workflow_dispatch:
 
@@ -51,14 +52,26 @@ jobs:
       - name: Sync Capacitor
         run: npx cap sync android
 
-      - name: Build debug APK
-        run: cd android && ./gradlew assembleDebug --no-daemon
+      - name: Restore release keystore from secrets
+        run: |
+          mkdir -p keystore
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > keystore/voicecomic-release.jks
+          {
+            echo 'STORE_FILE=../keystore/voicecomic-release.jks'
+            echo 'STORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}'
+            echo 'KEY_ALIAS=${{ secrets.KEY_ALIAS }}'
+            echo 'KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}'
+          } > android/keystore.properties
+          node tools/patch-signing.mjs
+
+      - name: Build signed release APK
+        run: cd android && ./gradlew assembleRelease --no-daemon
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: apk
-          path: android/app/build/outputs/apk/debug/*.apk
+          path: android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
       - name: Create GitHub Release
@@ -66,15 +79,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          APK=$(ls android/app/build/outputs/apk/debug/*.apk | head -1)
+          APK=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
           VERSION="${GITHUB_REF_NAME#v}"
           mv "$APK" "voicecomic-$GITHUB_REF_NAME.apk"
           NOTES=$(printf '%s\n' \
             "Сборка в GitHub Actions по git-тегу $GITHUB_REF_NAME." \
             "" \
-            "**Что нового:** чат с ИИ (сессии, файлы), PTY терминал (xterm.js), FastAPI бэкенд с GitHub PAT авторизацией, YOLOv8 model picker (n/s/m/l/x + custom), cloudflared туннель настраивается пользователем." \
+            "**Что нового:** чат с ИИ (сессии, файлы), PTY терминал (xterm.js), FastAPI бэкенд с GitHub PAT авторизацией, YOLOv8 model picker (n/s/m/l/x + custom), cloudflared туннель настраивается пользователем. Исправлен crash инициализации (все кнопки теперь кликабельны)." \
             "" \
-            "**APK (debug-sign):** voicecomic-$GITHUB_REF_NAME.apk")
+            "**APK (release-signed):** voicecomic-$GITHUB_REF_NAME.apk")
           gh release create "$GITHUB_REF_NAME" "voicecomic-$GITHUB_REF_NAME.apk" \
             --title "VoiceComic $VERSION — чат, терминал, бэкенд, YOLO picker" \
             --notes "$NOTES"

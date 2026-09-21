@@ -4,7 +4,7 @@ import {
   toast, uuid, download, fmtDur, loadImage,
 } from './util.js';
 import { idbSet, idbGet, idbDel, KEY_PROJECT, KEY_SETTINGS } from './store.js';
-import { analyzeRoles, translateLines, FREE_MODELS, refreshFreeModels, PROVIDERS, provider, isFreeModel } from './ai.js';
+import { analyzeRoles, translateLines, FREE_MODELS, refreshFreeModels, PROVIDERS, provider, providerHasVision, isFreeModel } from './ai.js';
 import { extractPages, clipsFromAudio } from './import.js';
 import { ocrPage } from './ocr.js';
 import { bubbleModelStatus, bubbleModelTargetBytes, downloadBubbleModel, bubbleModelClear, setYoloModel, getYoloModel, getModelInfo, YOLO_MODELS } from './yolo.js';
@@ -915,7 +915,7 @@ function populateProviderSelect() {
   const sel = $('opt-ai');
   sel.replaceChildren();
   Object.entries(PROVIDERS).forEach(([id, p]) => {
-    sel.appendChild(el('option', { value: id }, [p.name + (p.key === false ? ' · без ключа' : ' · ключ')]));
+    sel.appendChild(el('option', { value: id }, [p.name.includes('·') ? p.name : p.name + (p.key === false ? ' · без ключа' : ' · ключ')]));
   });
   if (!PROVIDERS[settings.ai]) settings.ai = 'pollinations';
   sel.value = settings.ai;
