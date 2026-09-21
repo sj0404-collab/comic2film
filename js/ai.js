@@ -257,9 +257,40 @@ export async function chat(settings, messages, opts = {}) {
     headers: p.headers || {},
     key: settings.key || '',
     model,
-    messages,
+    messages: messagesWithImages(messages, opts.images),
     json: opts.json,
     gap: opts.minGap ?? settings.aiGap ?? 2500,
+  });
+}
+
+/* Превращает массив dataURL-картинок в OpenAI-совместимые parts */
+function messagesWithImages(messages, images) {
+  if (!images || !images.length) return messages;
+  const img = images[0];
+  const body = { type: 'image_url', image_url: { url: img && (img.dataURL || img) } };
+  return messages.map(m => {
+    if (m.role !== 'user') return m;
+    if (typeof m.content === 'string') m.content = [{ type: 'text', text: m.content }];
+    if (Array.isArray(m.content)) m.content = [...m.content, body];
+    return m;
+  });
+}
+
+/* Отправка картинки vision-провайдеру поверх текстового контекста */
+export async function chatWithImage(settings, messages, imageDataURL) {
+  settings = { ...settings, aimodel: settings.aimodel || provider(settings.ai).models[0]?.id || 'openai' };
+  const p = provider(settings.ai);
+  if (!p.vision) throw new Error('«' + (p.name || settings.ai) + '» не умеет смотреть изображения (выберите vision-провайдер)');
+  const text = messages.filter(m => m.role !== 'system').map(m => (m.role === 'user' ? 'Пользователь: ' : 'ИИ: ') + m.content).join('\n');
+  if (p.gemini) return chatGeminiVision(settings, imageDataURL, text);
+  if (p.anthropic) return chatAnthropicVision(settings, imageDataURL, text);
+  return openAICompat({
+    name: (p.name || settings.ai).split(' ·')[0],
+    endpoint: settings.ai === 'custom' ? (settings.aiurl || '') : p.endpoint,
+    headers: p.headers || {},
+    key: settings.key || '',
+    model: settings.aimodel,
+    messages: [{ role: 'user', content: [{ type: 'text', text }, { type: 'image_url', image_url: { url: imageDataURL } }] }],
   });
 }
 
@@ -298,6 +329,12 @@ async function chatGemini(settings, messages, opts = {}) {
   const gap = opts.minGap ?? settings.aiGap ?? 2500;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
   const parts = messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+  const img = opts.images && opts.images[0];
+  if (img && parts.length) {
+    const d = img.dataURL || img;
+    const inl = d.split(';base64,');
+    parts[parts.length - 1].parts.push({ inline_data: { mime_type: inl[0].split(':')[1] || 'image/jpeg', data: inl[1] } });
+  }
   let attempt = 0;
   while (true) {
     try {
@@ -321,7 +358,19 @@ async function chatAnthropic(settings, messages, opts = {}) {
   const welcome = provider(settings.ai);
   const endpoint = settings.ai === 'custom' ? (settings.aiurl || '') : welcome.endpoint;
   const sys = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
-  const body = { model, max_tokens: 4096, messages: messages.filter(m => m.role !== 'system') };
+  let bodyMsgs = messages.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }));
+  const img = opts.images && opts.images[0];
+  if (img && bodyMsgs.length) {
+    const d = img.dataURL || img;
+    const inl = d.split(';base64,');
+    const mime = inl[0].split(':')[1] || 'image/jpeg';
+    const content = typeof bodyMsgs[bodyMsgs.length - 1].content === 'string'
+      ? [{ type: 'text', text: bodyMsgs[bodyMsgs.length - 1].content }]
+      : bodyMsgs[bodyMsgs.length - 1].content;
+    content.push({ type: 'image', source: { type: 'base64', media_type: mime, data: inl[1] } });
+    bodyMsgs[bodyMsgs.length - 1].content = content;
+  }
+  const body = { model, max_tokens: 4096, messages: bodyMsgs };
   if (sys) body.system = sys;
   const gap = opts.minGap ?? settings.aiGap ?? 2500;
   let attempt = 0;

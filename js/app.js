@@ -8,6 +8,7 @@ import { analyzeRoles, translateLines, FREE_MODELS, refreshFreeModels, PROVIDERS
 import { extractPages, clipsFromAudio } from './import.js';
 import { ocrPage } from './ocr.js';
 import { bubbleModelStatus, bubbleModelTargetBytes, downloadBubbleModel, bubbleModelClear } from './yolo.js';
+import { initChat, setChatSettings } from './chat.js';
 import {
   synthesizeLine, voicesForLang, allVoices, fetchVoicesFromMicrosoft,
 } from './voices.js';
@@ -1223,6 +1224,8 @@ async function init() {
   bindSettings();
   syncModelUi();
   syncProviderUi();
+  setChatSettings(settings);
+  initChat();
   renderAll();
   wire();
 }
