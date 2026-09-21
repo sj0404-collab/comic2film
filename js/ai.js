@@ -1,6 +1,7 @@
 /* ИИ-провайдеры: Pollinations (бесплатно, без ключа), Google Gemini (ключ,
  * есть бесплатный уровень), свой OpenAI-совместимый. Плюс функции «роли»
  * и «перевод» для сценария. */
+import { MODELS_DEV } from './models.dev.js';
 
 export const POLLIMAGES = 'https://text.pollinations.ai';
 
@@ -9,7 +10,7 @@ export const POLLIMAGES = 'https://text.pollinations.ai';
  * free:true — бесплатная тарифом; key:false — работает вообще без ключа.
  * Единственный провайдер без ключа — Pollinations (tier=anonymous).
  * ================================================================ */
-export const PROVIDERS = {
+export const CURATED_PROVIDERS = {
   pollinations: {
     name: 'Pollinations · без ключа', key: false, openai: true,
     endpoint: POLLIMAGES + '/openai',
@@ -125,17 +126,8 @@ export const PROVIDERS = {
     ],
   },
   custom: {
-    name: 'M-PM-!M-PM-2M-PM->M-PM-9 OpenAI-M-QM-^AM-PM->M-PM-2M-PM-<M-PM-5M-QM-^AM-QM-^BM-PM-8M-PM-<M-QM-^KM-PM-9', key: true, openai: true,
+    name: 'Свой OpenAI-совместимый API', key: true, openai: true,
     endpoint: '', models: [],
-  },
-  zen: {
-    name: 'Zen AI', key: true, openai: true,
-    endpoint: 'https://api.zen.ai/v1/chat/completions',
-    models: [
-      { id: 'zen-30b', label: 'Zen 30B', free: false },
-      { id: 'zen-20b', label: 'Zen 20B', free: false },
-      { id: 'zen-8b', label: 'Zen 8B', free: false },
-    ],
   },
   local: {
     name: 'Local (Ollama / OpenWebUI)', key: true, openai: true,
@@ -148,6 +140,41 @@ export const PROVIDERS = {
     ],
   },
 };
+
+/* Полный каталог opencode (models.dev) + рукодельные записи поверх.
+ * Рукодельные модели первыми (у них удобные подписи и точные free-флаги),
+ * затем ВСЕ модели из models.dev, которых нет вручную. */
+function catalog() {
+  const all = {};
+  for (const [id, p] of Object.entries(CURATED_PROVIDERS)) {
+    all[id] = { ...p, models: (p.models || []).map((m) => ({ ...m })) };
+  }
+  for (const [id, d] of Object.entries(MODELS_DEV)) {
+    const mdev = (d.models || []).map((arr) => {
+      const m = { id: arr[0] };
+      if (arr[1] === 1) m.free = true;
+      if (arr[2]) m.label = arr[2];
+      return m;
+    });
+    if (all[id]) {
+      const have = new Set(all[id].models.map((m) => m.id));
+      for (const m of mdev) if (!have.has(m.id)) all[id].models.push(m);
+    } else if (d.endpoint) {
+      all[id] = {
+        name: d.name,
+        key: true,
+        openai: d.fmt === 'openai',
+        anthropic: d.fmt === 'anthropic',
+        endpoint: d.endpoint,
+        models: mdev,
+      };
+    }
+  }
+  return all;
+}
+
+export const PROVIDERS = catalog();
+export { MODELS_DEV } from './models.dev.js';
 
 export function provider(id) { return PROVIDERS[id] || PROVIDERS.custom; }
 
@@ -284,6 +311,8 @@ async function chatAnthropic(settings, messages, opts = {}) {
   const model = settings.aimodel || 'claude-sonnet-4-5';
   const key = settings.key || '';
   if (!key) throw new Error('Anthropic: нужен API-ключ');
+  const welcome = provider(settings.ai);
+  const endpoint = settings.ai === 'custom' ? (settings.aiurl || '') : welcome.endpoint;
   const sys = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
   const body = { model, max_tokens: 4096, messages: messages.filter(m => m.role !== 'system') };
   if (sys) body.system = sys;
@@ -291,7 +320,7 @@ async function chatAnthropic(settings, messages, opts = {}) {
   let attempt = 0;
   while (true) {
     try {
-      const r = await fetch(provider('anthropic').endpoint, {
+      const r = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify(body),
@@ -311,8 +340,10 @@ async function chatAnthropic(settings, messages, opts = {}) {
 }
 
 export async function chatGeminiVision(settings, imageDataURL, prompt) {
+  const key = settings.key || '';
+  if (!key) throw new Error('Gemini: нужен API-ключ (Опции → ИИ-провайдер → ключ)');
   const model = settings.aimodel || 'gemini-2.0-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${settings.key}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
   const inline = imageDataURL.split(';base64,');
   const body = { contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: inline[0].split(':')[1] || 'image/jpeg', data: inline[1] } }] }] };
   const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -362,7 +393,9 @@ async function chatAnthropicVision(settings, dataURL, prompt) {
   const parts = [{ type: 'text', text: prompt }];
   if (m) parts.push({ type: 'image', source: { type: 'base64', media_type: m[1], data: m[2] } });
   else parts.push({ type: 'image', source: { type: 'url', url: dataURL } });
-  const r = await fetch(provider('anthropic').endpoint, {
+  const p = provider(settings.ai);
+  const endpoint = settings.ai === 'custom' ? (settings.aiurl || '') : p.endpoint;
+  const r = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({ model: settings.aimodel || 'claude-sonnet-4-5', max_tokens: 4096, messages: [{ role: 'user', content: parts }] }),

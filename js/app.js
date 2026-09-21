@@ -57,6 +57,7 @@ let settings = defaultSettings();
 let project = defaultProject();
 let audioMgr = null;
 let previewCtl = null;
+let abortPreview = null;
 let deferredPrompt = null;
 
 /* ================================================================
@@ -120,6 +121,16 @@ function playUrl(url) {
   if (audioMgr) { try { audioMgr.pause(); } catch (e) {} }
   audioMgr = new Audio(url);
   audioMgr.play().catch(() => {});
+}
+
+/* Проигрывание Blob с автоочисткой object URL по окончании/ошибке */
+function playBlob(blob) {
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  const release = () => { audio.removeEventListener('ended', release); audio.removeEventListener('error', release); URL.revokeObjectURL(url); };
+  audio.addEventListener('ended', release);
+  audio.addEventListener('error', release);
+  audio.play().catch(release);
 }
 
 /* автосохранение */
@@ -196,6 +207,7 @@ async function importAudio(files) {
   $('imp-kind-label').textContent = 'аудио / голосовые нарезки · клипов: ' + project.clips.length;
   showImpActions('clips');
   renderLib();
+  renderClipsGrid();
   toast('Звук нарезан на фразы');
 }
 
@@ -303,8 +315,26 @@ function delPage(id) {
 function renderClipsList() {
   const list = $('clips-list');
   list.replaceChildren();
+  const item = (c) => el('div', { class: 'item rowrow' }, [
+    el('button', { class: 'btn mini', onclick: () => playUrl(c.url) }, ['▶']),
+    el('div', { style: 'flex:1;min-width:0' }, [
+      el('div', { html: c.name }),
+      el('div', { class: 'muted' }, [`фраз: ${c.count} · ${fmtDur(c.duration)}`]),
+    ]),
+    el('button', { class: 'btn mini', onclick: () => useAsMusic(c) }, ['🎵']),
+    el('button', { class: 'btn mini danger', onclick: () => delClip(c.id) }, ['✕']),
+  ]);
+  project.clips.forEach(c => list.appendChild(item(c)));
+  renderClipsGrid();
+}
+
+/* Карточка «Нарезки голосов» на вкладке Голоса */
+function renderClipsGrid() {
+  const grid = $('clips-grid');
+  if (!grid) return;
+  grid.replaceChildren();
   project.clips.forEach(c => {
-    list.appendChild(el('div', { class: 'item rowrow' }, [
+    grid.appendChild(el('div', { class: 'item rowrow' }, [
       el('button', { class: 'btn mini', onclick: () => playUrl(c.url) }, ['▶']),
       el('div', { style: 'flex:1;min-width:0' }, [
         el('div', { html: c.name }),
@@ -545,7 +575,7 @@ function roleSelect(handler, current) {
 }
 
 async function bubblePlay(b) {
-  if (b.audio && b.audio.blob) { playUrl(URL.createObjectURL(b.audio.blob)); return; }
+  if (b.audio && b.audio.blob) { playBlob(b.audio.blob); return; }
   const role = roleById(b.roleId);
   try {
     const res = await synthesizeLine(settings, b.text || '', {
@@ -553,7 +583,7 @@ async function bubblePlay(b) {
       pitch: (role && role.pitch) || '+0Hz', rate: (role && role.rate) || '+0%',
       volume: (role && role.volume) || '+0%', style: (role && role.style) || '',
     });
-    if (res && res.blob) { b.audio = { blob: res.blob, duration: 0 }; playUrl(URL.createObjectURL(res.blob)); toast('Реплика озвучена (Edge)'); autoSaveTimer(); }
+    if (res && res.blob) { b.audio = { blob: res.blob, duration: 0 }; playBlob(res.blob); toast('Реплика озвучена (Edge)'); autoSaveTimer(); }
     else if (res && res.browser) res.play?.(); 
     renderScript();
   } catch (e) { toast('Озвучка: ' + e.message, 'err'); }
@@ -580,7 +610,7 @@ function renderScript() {
       class: 'btn mini', title: b.audio ? 'прослушать' : 'озвучить', onclick: () => bubblePlay(b),
     }, [b.audio ? '▶' : '🗣']);
     const delB = el('button', {
-      class: 'btn mini danger', onclick: () => { b.audio && b.audio.blob && URL.revokeObjectURL(b.audio.blob); b.audio = null; renderScript(); autoSaveTimer(); },
+      class: 'btn mini danger', onclick: () => { b.audio = null; renderScript(); autoSaveTimer(); },
     }, ['🗑']);
     const color = role ? role.color : '#ffb454';
     list.appendChild(el('div', { class: 'item' }, [
@@ -726,6 +756,7 @@ async function doPreview() {
   body.appendChild(hints);
   let abortResolve = null;
   const abort = new Promise(r => { abortResolve = r; });
+  abortPreview = abortResolve;
   try {
     const ctl = previewStart(project, canvas, { w, h }, (p, m) => {
       hints.textContent = '▶ ' + (m || '…');
@@ -738,6 +769,7 @@ async function doPreview() {
     hints.textContent = 'ошибка: ' + e.message;
   }
   previewCtl = null;
+  abortPreview = null;
 }
 
 function stopPreview() {
@@ -745,6 +777,7 @@ function stopPreview() {
     try { previewCtl.stop(); } catch (e) {}
     previewCtl = null;
   }
+  if (abortPreview) { abortPreview(); abortPreview = null; }
 }
 
 async function doRender() {
@@ -1034,6 +1067,7 @@ function renderAll() {
   scriptStatus();
   renderVoiceCount();
   renderMusicLabel();
+  renderClipsGrid();
 }
 
 function settab(name) {

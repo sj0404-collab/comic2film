@@ -228,6 +228,11 @@ export function sliceSegments(samples, sr, { threshold = 0.02, winMs = 40, minSi
       }
     }
   }
+  // сигнал закончился «активным» — вытолкнуть последний сегмент
+  if (inClip) {
+    const s = cStart * win / sr, e = Math.min(n, (cEnd + 1) * win) / sr;
+    if (e - s >= minClip) segs.push({ startS: s, endS: Math.min(e, s + maxClip) });
+  }
   return segs;
 }
 
@@ -262,7 +267,6 @@ export function cleanMp3Frames(bytes) {
       const brI = (h >> 12) & 0xf;
       const srI = (h >> 10) & 3;
       const pad = (h >> 9) & 1;
-      const chan = (h >> 6) & 3;
       if ((ver === 3 || ver === 2 || ver === 0) && layer === 1 && brI !== 0 && brI !== 0xf && srI !== 3) {
         let br, sr;
         if (ver === 3) {
@@ -282,7 +286,6 @@ export function cleanMp3Frames(bytes) {
           continue;
         }
       }
-      void chan;
     }
     i++;
   }

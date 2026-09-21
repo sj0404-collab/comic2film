@@ -152,9 +152,13 @@ export async function decodeAudio(blob) {
 export async function clipsFromAudio(blob, { threshold = 0.02, minSilence = 0.32, minClip = 0.3, maxClip = 16, onProgress } = {}) {
   const { samples, sr, url, duration } = await decodeAudio(blob);
   const { sliceSegments, trimSilence } = await import('./util.js');
-  const segs = sliceSegments(trimSilence(samples, sr).start > 0 ? samples.subarray(0) : samples, sr, {
+  // режем по тишине только «тело» записи, но смещения возвращаем в
+  // координатах исходного сигнала, чтобы нарезка совпадала с samples
+  const { start: tStart, end: tEnd } = trimSilence(samples, sr);
+  const body = samples.subarray(tStart, tEnd);
+  const segs = sliceSegments(body, sr, {
     threshold, minSilence, minClip, maxClip,
-  });
+  }).map(s => ({ startS: s.startS + tStart / sr, endS: s.endS + tStart / sr }));
   onProgress && onProgress(1, 'Нарезка выполнена');
   return { url, duration, sr, segs, samples };
 }

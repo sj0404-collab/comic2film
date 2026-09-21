@@ -6,6 +6,7 @@ const CORE = [
   'js/util.js',
   'js/store.js',
   'js/ai.js',
+  'js/models.dev.js',
   'js/import.js',
   'js/ocr.js',
   'js/voices.js',

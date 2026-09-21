@@ -68,6 +68,24 @@ async function makePartBuffer(actx, blob, useTrim) {
   return trimmedPlayRange(actx, blob);
 }
 
+/* Линейная передискретизация моно-канала между двумя частотами.
+ * Нужно, т.к. Edge-TTS отдаёт 24 кГц, а дорожка микшируется в 44.1 кГц. */
+export function resampleLinear(src, fromSr, toSr) {
+  if (!(fromSr > 0 && toSr > 0) || fromSr === toSr) return src;
+  const n = Math.max(0, Math.floor(src.length * toSr / fromSr));
+  const out = new Float32Array(n);
+  if (!src.length || !n) return out;
+  const step = fromSr / toSr;
+  for (let i = 0; i < n; i++) {
+    const pos = i * step;
+    const i0 = Math.min(Math.floor(pos), src.length - 1);
+    const i1 = Math.min(src.length - 1, i0 + 1);
+    const frac = pos - i0;
+    out[i] = src[i0] + (src[i1] - src[i0]) * frac;
+  }
+  return out;
+}
+
 /* ================================================================
  * Видео
  * ================================================================ */
@@ -101,10 +119,8 @@ function cameraFor(item, clock, P, C, zoomMode) {
       // панорама к реплике с зумом 1.15
       const crop = cover * 1.15;
       const vw = W / crop, vh = H / crop;
-      const sx = clampV(bC2x - vw / 2 + (pw - vw) * 0.5 * 0, 0, pw - vw) + (pw - vw) / 2 * 0;
       const sx2 = clampV(bC2x - vw / 2, 0, Math.max(0, pw - vw));
       const sy2 = clampV(bC2y - vh / 2, 0, Math.max(0, ph - vh));
-      void sx;
       return { sx: sx2, sy: sy2, sw: vw, sh: vh, zoom: crop };
     }
     const prog = item.dur > 0 ? smooth(Math.min(1, (clock - item.t) / item.dur)) : 0;
@@ -454,8 +470,12 @@ export async function renderAudioTrack(project, onProgress) {
   const frameCount = Math.ceil(total * sr);
   const out = new Float32Array(frameCount);
   const mixAdd = (buf, offsetSec, vol) => {
-    const ch = buf.getChannelData(0);
-    do { const i0 = Math.floor(offsetSec * sr); if (i0 >= frameCount) break; const n = Math.min(ch.length, frameCount - i0); for (let k = 0; k < n; k++) out[i0 + k] += ch[k] * vol; break; } while (0);
+    let ch = buf.getChannelData(0);
+    if (buf.sampleRate !== sr) ch = resampleLinear(ch, buf.sampleRate, sr);
+    const i0 = Math.floor(offsetSec * sr);
+    if (i0 >= frameCount) return;
+    const n = Math.min(ch.length, frameCount - i0);
+    for (let k = 0; k < n; k++) out[i0 + k] += ch[k] * vol;
   };
   for (const it of items) {
     const pb = buffers.get(it.bubble ? it.bubble.id : '');
@@ -505,7 +525,7 @@ export async function toMP4(webmBlob, onLog) {
   const ffmpeg = await loadFFmpeg(onLog);
   const input = new Uint8Array(await webmBlob.arrayBuffer());
   await ffmpeg.writeFile('in.webm', input);
-  ffmpeg.exec(['-y', '-i', 'in.webm', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', 'out.mp4']);
+  await ffmpeg.exec(['-y', '-i', 'in.webm', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', 'out.mp4']);
   const data = await ffmpeg.readFile('out.mp4');
   return { blob: new Blob([data], { type: 'video/mp4' }), name: 'video.mp4' };
 }
@@ -514,7 +534,7 @@ export async function toGIF(webmBlob, onLog) {
   const ffmpeg = await loadFFmpeg(onLog);
   const input = new Uint8Array(await webmBlob.arrayBuffer());
   await ffmpeg.writeFile('in.webm', input);
-  ffmpeg.exec(['-y', '-i', 'in.webm', '-vf', 'fps=12,scale=480:-1:flags=lanczos', 'out.gif']);
+  await ffmpeg.exec(['-y', '-i', 'in.webm', '-vf', 'fps=12,scale=480:-1:flags=lanczos', 'out.gif']);
   const data = await ffmpeg.readFile('out.gif');
   return { blob: new Blob([data], { type: 'image/gif' }), name: 'video.gif' };
 }

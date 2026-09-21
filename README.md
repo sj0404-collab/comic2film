@@ -85,13 +85,15 @@ cd android && ./gradlew assembleDebug
 
 ## API и ключи
 
-Встроен каталог из 13 провайдеров (Опции → «ИИ-провайдер»), у каждой модели отмечается статус:
+Встроен полный каталог провайдеров и моделей opencode (исходник — models.dev, см. `js/models.dev.js`): 200+ провайдеров OpenAI-/Anthropic-совместимых API, у каждой модели отмечается статус:
 
 - **🆓 без ключа**: Pollinations — единственный провайдер, работающий совсем без ключа (`text.pollinations.ai/openai`). Список живых бесплатных моделей (tier=anonymous, сейчас движок GPT-OSS 20B и алиасы) обновляется кнопкой «🔄 обновить список».
-- **🔑 с ключом**: OpenRouter (есть `:free`-модели), OpenAI, Anthropic Claude, Google Gemini, Groq (free tier), DeepSeek, Mistral, Together AI, xAI Grok, Perplexity, Cerebras (free tier) — ключ вставляется в «Ключ API».
+- **🔑 с ключом**: OpenRouter (есть `:free`-модели), OpenAI, Anthropic Claude, Google Gemini, Groq (free tier), DeepSeek, Mistral, Together AI, xAI Grok, Perplexity, Cerebras (free tier) + 180+ совместимых провайдеров из models.dev — ключ вставляется в «Ключ API».
 - **Свой OpenAI-совместимый** — любой endpoint (Ollama, LM Studio, VPN-прокси) + ключ.
 - **Edge-TTS** — работает напрямую из браузера через WSS (Microsoft публичный эндпоинт), прокси опционально.
 - **Tesseract** — полностью локально (wasm загружается с CDN при первом OCR).
+
+Каталог генерируется скриптом `tools/gen-models.mjs` из https://models.dev/api.json (те же данные, что использует npm-пакет opencode).
 
 ## Лицензия
 
