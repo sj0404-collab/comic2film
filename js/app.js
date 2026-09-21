@@ -7,7 +7,7 @@ import { idbSet, idbGet, idbDel, KEY_PROJECT, KEY_SETTINGS } from './store.js';
 import { analyzeRoles, translateLines, FREE_MODELS, refreshFreeModels, PROVIDERS, provider, isFreeModel } from './ai.js';
 import { extractPages, clipsFromAudio } from './import.js';
 import { ocrPage } from './ocr.js';
-import { bubbleModelStatus, bubbleModelTargetBytes, downloadBubbleModel, bubbleModelClear } from './yolo.js';
+import { bubbleModelStatus, bubbleModelTargetBytes, downloadBubbleModel, bubbleModelClear, setYoloModel, getYoloModel, getModelInfo, YOLO_MODELS } from './yolo.js';
 import { initChat, setChatSettings } from './chat.js';
 import {
   synthesizeLine, voicesForLang, allVoices, fetchVoicesFromMicrosoft,
@@ -1039,16 +1039,57 @@ async function fetchAllVoices() {
 async function renderBubbleModelStatus() {
   const el = $('bubble-model-status');
   if (!el) return;
+  const modelId = getYoloModel();
+  const info = getModelInfo(modelId);
   const st = await bubbleModelStatus();
+  const size = info ? (info.size / 1048576).toFixed(1) : (bubbleModelTargetBytes(modelId) / 1048576).toFixed(1);
   if (st.ready) el.textContent = 'модель на устройстве (' + (st.bytes / 1048576).toFixed(1) + 'МБ)';
-  else el.textContent = 'не скачана (около ' + (bubbleModelTargetBytes() / 1048576).toFixed(0) + 'МБ)';
+  else el.textContent = 'не скачана (около ' + size + 'МБ)';
+  // показать/скрыть кастомное поле
+  const customDiv = $('custom-yolo-url');
+  if (customDiv) customDiv.classList.toggle('hidden', modelId !== 'custom');
 }
 
 async function wireBubbleModel() {
   const btn = $('btnBubbleModel');
+  const modelSel = $('opt-yolo-model');
   if (!btn) return;
   renderBubbleModelStatus();
+  if (modelSel) {
+    modelSel.value = getYoloModel();
+    modelSel.addEventListener('change', async () => {
+      const mid = modelSel.value;
+      if (mid === 'custom') {
+        // wait for user to enter URL
+        return;
+      }
+      setYoloModel(mid);
+      renderBubbleModelStatus();
+      toast('Модель: ' + (getModelInfo(mid)?.name || mid));
+    });
+  }
+  const customUrlInput = $('opt-yolo-custom-url');
+  if (customUrlInput) {
+    customUrlInput.addEventListener('change', async () => {
+      const url = customUrlInput.value.trim();
+      if (url) {
+        // register custom model dynamically
+        YOLO_MODELS.custom = {
+          id: 'custom',
+          name: 'Кастомная модель',
+          url,
+          size: 0,
+          nPred: 37,
+          imgsz: 640,
+        };
+        setYoloModel('custom');
+        toast('Кастомная модель установлена');
+      }
+    });
+  }
   btn.addEventListener('click', async () => {
+    const modelId = getYoloModel();
+    const info = getModelInfo(modelId);
     const st = await bubbleModelStatus();
     if (st.ready) {
       if (!confirm('Модель уже скачана. Удалить и скачать заново?')) return;
@@ -1056,7 +1097,8 @@ async function wireBubbleModel() {
     }
     btn.disabled = true;
     btn.textContent = '⬇ Скачивание…';
-    setProgress(0, 'Скачиваю модель облачков (108МБ)…');
+    const size = info ? info.size : 0;
+    setProgress(0, 'Скачиваю модель облачков (' + (size/1048576).toFixed(0) + 'МБ)…');
     $('imp-progress').classList.remove('hidden');
     try {
       await downloadBubbleModel((p) => {
@@ -1067,7 +1109,7 @@ async function wireBubbleModel() {
     $('imp-progress').classList.add('hidden');
     setProgress(0);
     btn.disabled = false;
-    btn.textContent = '⬇ Скачать модель облачков сейчас';
+    btn.textContent = '⬇ Скачать выбранную модель';
     renderBubbleModelStatus();
   });
 }

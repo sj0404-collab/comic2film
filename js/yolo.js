@@ -1,20 +1,64 @@
-/* Обнаружение речевых пузырей (облачков) в странице комикса через YOLOv8 ONNX.
- * Модель: kitsumed/yolov8m_seg-speech-bubble (1 класс «speech bubble»), ~108МБ,
- * скачивается один раз и кэшируется в IndexedDB (slot 'model:bubbles').
- * Инференс — onnxruntime-web (WASM), модель раздаётся с huggingface.co постепенно.
+/* Обнаружение речевых пузырей (облачков) в странице комикса через YOLO ONNX.
+ * Поддерживает несколько версий YOLO (v8 nano/s/m/l/x, кастомные URL).
+ * Модели кэшируются в IndexedDB под уникальными ключами 'model:bubbles:<modelId>'.
+ * Инференс — onnxruntime-web (WASM).
  */
 
 import { idbGet, idbSet, idbDel } from './store.js';
 
-export const BUBBLE_MODEL_URL = 'https://huggingface.co/kitsumed/yolov8m_seg-speech-bubble/resolve/main/model_dynamic.onnx';
+/* Реестр известных моделей. Каждая модель: { id, name, url, size, nPred, imgsz }
+ * nPred = 4 bbox + nc classes + maskCoeffs (YOLOv8-seg nc=1 → 4+1+32=37)
+ * Для nano/s/m/l/x структура одинакова, отличается только веса.
+ * Кастомная модель — пользователь задаёт URL, мы предполагаем стандартный v8-seg.
+ */
+export const YOLO_MODELS = {
+  'yolov8m-seg-bubble': {
+    id: 'yolov8m-seg-bubble',
+    name: 'YOLOv8m-seg (kitsumed/speech-bubble)',
+    url: 'https://huggingface.co/kitsumed/yolov8m_seg-speech-bubble/resolve/main/model_dynamic.onnx',
+    size: 108982949,
+    nPred: 37,
+    imgsz: 640,
+  },
+  'yolov8n-seg-bubble': {
+    id: 'yolov8n-seg-bubble',
+    name: 'YOLOv8n-seg (nano, speech-bubble)',
+    url: 'https://huggingface.co/kitsumed/yolov8n_seg-speech-bubble/resolve/main/model_dynamic.onnx',
+    size: 6200000,
+    nPred: 37,
+    imgsz: 640,
+  },
+  'yolov8s-seg-bubble': {
+    id: 'yolov8s-seg-bubble',
+    name: 'YOLOv8s-seg (small, speech-bubble)',
+    url: 'https://huggingface.co/kitsumed/yolov8s_seg-speech-bubble/resolve/main/model_dynamic.onnx',
+    size: 22000000,
+    nPred: 37,
+    imgsz: 640,
+  },
+  'yolov8l-seg-bubble': {
+    id: 'yolov8l-seg-bubble',
+    name: 'YOLOv8l-seg (large, speech-bubble)',
+    url: 'https://huggingface.co/kitsumed/yolov8l_seg-speech-bubble/resolve/main/model_dynamic.onnx',
+    size: 180000000,
+    nPred: 37,
+    imgsz: 640,
+  },
+  'yolov8x-seg-bubble': {
+    id: 'yolov8x-seg-bubble',
+    name: 'YOLOv8x-seg (xlarge, speech-bubble)',
+    url: 'https://huggingface.co/kitsumed/yolov8x_seg-speech-bubble/resolve/main/model_dynamic.onnx',
+    size: 260000000,
+    nPred: 37,
+    imgsz: 640,
+  },
+};
+
 const ORT_SRC = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js';
 const ORT_WASM = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
-const MODEL_KEY = 'model:bubbles';
-const N_PRED = 37;   // 4 bbox + 1 class + 32 mask-coeff (YOLOv8m-seg, nc=1)
-const IMGSZ = 640;   // letterbox-размер инференса
-const CONF = 0.25, IOU = 0.45;
 
 let _ort = null;
+let _currentModelId = 'yolov8m-seg-bubble';
 
 function loadScript(src) {
   return new Promise((res, rej) => {
@@ -38,28 +82,51 @@ async function ensureOrt() {
   return _ort;
 }
 
-/** Статус скачанной модели. */
-export async function bubbleModelStatus() {
-  try {
-    const b = await idbGet(MODEL_KEY);
-    return b ? { ready: true, bytes: b.byteLength } : { ready: false, bytes: 0 };
-  } catch (e) { return { ready: false, bytes: 0 }; }
+function modelKey(modelId) {
+  return 'model:bubbles:' + modelId;
 }
 
-export function bubbleModelTargetBytes() { return 108982949; }
+export function setYoloModel(modelId) {
+  if (YOLO_MODELS[modelId] || modelId === 'custom') {
+    _currentModelId = modelId;
+  }
+}
 
-/** Удалить локальную копию. */
-export async function bubbleModelClear() { await idbDel(MODEL_KEY); }
+export function getYoloModel() {
+  return _currentModelId;
+}
+
+export function getModelInfo(modelId) {
+  return YOLO_MODELS[modelId] || null;
+}
+
+/** Статус скачанной модели (текущей). */
+export async function bubbleModelStatus() {
+  try {
+    const b = await idbGet(modelKey(_currentModelId));
+    return b ? { ready: true, bytes: b.byteLength, modelId: _currentModelId } : { ready: false, bytes: 0, modelId: _currentModelId };
+  } catch (e) { return { ready: false, bytes: 0, modelId: _currentModelId }; }
+}
+
+export function bubbleModelTargetBytes(modelId = _currentModelId) {
+  const m = YOLO_MODELS[modelId];
+  return m ? m.size : 0;
+}
+
+/** Удалить локальную копию текущей модели. */
+export async function bubbleModelClear() { await idbDel(modelKey(_currentModelId)); }
 
 /** Скачать модель (с прогрессом) и вернуть [InferenceSession, bytes]. */
-export async function downloadBubbleModel(onProgress) {
+export async function downloadBubbleModel(onProgress, modelId = _currentModelId) {
   const ort = await ensureOrt();
-  const cached = await idbGet(MODEL_KEY);
+  const model = YOLO_MODELS[modelId] || { url: settings?.yoloCustomUrl, size: 0, nPred: 37, imgsz: 640 };
+  const key = modelKey(modelId);
+  const cached = await idbGet(key);
   if (cached && cached.byteLength) {
     return [await ort.InferenceSession.create(cached, { executionProviders: ['wasm'] }), cached];
   }
-  const r = await fetch(BUBBLE_MODEL_URL);
-  if (!r.ok) throw new Error('модель bubbles: HTTP ' + r.status);
+  const r = await fetch(model.url);
+  if (!r.ok) throw new Error('модель ' + modelId + ': HTTP ' + r.status);
   const total = +r.headers.get('content-length') || 0;
   const rd = r.body.getReader();
   const chunks = [];
@@ -74,12 +141,20 @@ export async function downloadBubbleModel(onProgress) {
   const bytes = new Uint8Array(got);
   let off = 0;
   for (const c of chunks) { bytes.set(c, off); off += c.length; }
-  await idbSet(MODEL_KEY, bytes);
+  await idbSet(key, bytes);
   const ses = await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] });
   return [ses, bytes];
 }
 
-/* letterbox: вписать canvas в IMGSZ×IMGSZ без искажений, норм 0..1, RGB */
+const CONF = 0.25, IOU = 0.45;
+let _nPred = 37, _imgsz = 640;
+
+function updateModelParams(modelId) {
+  const m = YOLO_MODELS[modelId];
+  if (m) { _nPred = m.nPred; _imgsz = m.imgsz; }
+}
+
+/* letterbox: вписать canvas в target×target без искажений, норм 0..1, RGB */
 function letterbox(img, target) {
   const iw = img.naturalWidth || img.width;
   const ih = img.naturalHeight || img.height;
@@ -102,15 +177,14 @@ function letterbox(img, target) {
   return { data: rgb, ratio, dx, dy };
 }
 
-/* Декод output0 [1,37,N] -> [{x,y,w,h,conf}] в координатах исходного канваса */
+/* Декод output0 [1,N_PRED,N] -> [{x,y,w,h,conf}] в координатах исходного канваса */
 function decode(pred, ratio, dx, dy, W, H) {
-  const N = pred.length / N_PRED;
+  const N = pred.length / _nPred;
   const out = [];
   for (let j = 0; j < N; j++) {
     const sc = pred[4 * N + j];
     if (sc < CONF) continue;
     const cx = pred[0 * N + j], cy = pred[1 * N + j], w = pred[2 * N + j], h = pred[3 * N + j];
-    // pred в пикселях letterbox-канваса -> исходные
     const x1 = (cx - w / 2 - dx) / ratio;
     const y1 = (cy - h / 2 - dy) / ratio;
     const x2 = (cx + w / 2 - dx) / ratio;
@@ -136,7 +210,7 @@ function nms(dets) {
   dets.sort((a, b) => b.conf - a.conf);
   const keep = [];
   for (const d of dets) {
-    if (d.w < 8 || d.h < 8) continue; // слишком мелкие — артефакты
+    if (d.w < 8 || d.h < 8) continue;
     if (keep.some((k) => iou(d, k) > IOU)) continue;
     keep.push(d);
   }
@@ -151,18 +225,20 @@ function nms(dets) {
  */
 export async function detectBubbles(img, { onProgress, onModel } = {}) {
   const ort = await ensureOrt();
-  const cached = await idbGet(MODEL_KEY);
+  updateModelParams(_currentModelId);
+  const key = modelKey(_currentModelId);
+  const cached = await idbGet(key);
   let ses, bytes = cached;
   if (bytes && bytes.byteLength) {
     ses = await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] });
   } else {
     if (onModel) onModel();
-    [ses] = await downloadBubbleModel(onProgress);
+    [ses] = await downloadBubbleModel(onProgress, _currentModelId);
   }
-  const { data, ratio, dx, dy } = letterbox(img, IMGSZ);
+  const { data, ratio, dx, dy } = letterbox(img, _imgsz);
   const W = img.naturalWidth || img.width;
   const H = img.naturalHeight || img.height;
-  const feeds = { images: new ort.Tensor('float32', data, [1, 3, IMGSZ, IMGSZ]) };
+  const feeds = { images: new ort.Tensor('float32', data, [1, 3, _imgsz, _imgsz]) };
   const res = await ses.run(feeds);
   const pred = res.output0.data;
   const dets = decode(pred, ratio, dx, dy, W, H);
