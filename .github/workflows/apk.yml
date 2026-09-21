@@ -26,8 +26,18 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install deps
         run: npm ci
+
+      - name: Install Python deps
+        run: |
+          cd backend
+          pip install -r requirements.txt
 
       - name: Lint + tests
         run: npm run check && npm test
@@ -40,6 +50,35 @@ jobs:
 
       - name: Sync Capacitor
         run: npx cap sync android
+
+      - name: Start cloudflared tunnel
+        run: |
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared-linux-amd64.deb
+          cloudflared tunnel --url http://localhost:8000 --no-autoupdate > tunnel.log 2>&1 &
+          echo "Tunnel PID: $!"
+          sleep 5
+          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' tunnel.log | head -1)
+          echo "TUNNEL_URL=$TUNNEL_URL" >> $GITHUB_ENV
+          echo "Tunnel URL: $TUNNEL_URL"
+
+      - name: Start backend
+        env:
+          VOICECOMIC_WORKSPACE: ${{ runner.temp }}/voicecomic-workspace
+          PORT: 8000
+        run: |
+          mkdir -p ${{ runner.temp }}/voicecomic-workspace
+          cd backend
+          python main.py > backend.log 2>&1 &
+          echo "Backend PID: $!"
+          sleep 3
+          curl -s http://localhost:8000/health
+
+      - name: Inject tunnel URL into app config
+        if: env.TUNNEL_URL != ''
+        run: |
+          echo "window.__VOICECOMIC_TUNNEL__ = '${TUNNEL_URL}';" > www/js/tunnel-config.js
+          echo "Tunnel config written"
 
       - name: Build debug APK
         run: cd android && ./gradlew assembleDebug --no-daemon

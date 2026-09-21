@@ -1304,7 +1304,18 @@ async function wire() {
 
   window.onSettingsChanged = (s) => { settings = s; };
 
+function applyTunnelConfig() {
+  const tunnel = window.__VOICECOMIC_TUNNEL__;
+  if (tunnel && !settings.backendUrl) {
+    settings.backendUrl = tunnel.replace('https://', 'wss://');
+    const urlInput = $('opt-backend-url');
+    if (urlInput) urlInput.value = settings.backendUrl;
+    toast('Авто-туннель: ' + tunnel);
+  }
+}
+
 async function init() {
+  applyTunnelConfig();
   try {
     const savedSettings = await idbGet(KEY_SETTINGS);
     if (savedSettings) settings = Object.assign(defaultSettings(), savedSettings);
