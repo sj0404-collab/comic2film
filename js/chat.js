@@ -1,7 +1,8 @@
 /* Чат с ИИ: сессии, сообщения, файловые вложения (без лимитов). */
 
 import { idbGet, idbSet, chatGetSessions, chatSetSessions, chatGetMessages, chatSetMessages, chatDelSession, KEY_SETTINGS } from './store.js';
-import { provider, PROVIDERS, chat, chatWithImage } from './ai.js';
+import { provider, chat, chatWithImage, modelMeta } from './ai.js';
+import { openModelPicker } from './modelsui.js';
 
 const LS_CURRENT = 'chat:current';
 const MAX_COPY = 12;
@@ -20,7 +21,7 @@ export async function initChat() {
     currentId = sessions[0] ? sessions[0].id : null;
   }
   if (currentId) { await loadMessages(); } else { currentId = newChat(); await loadMessages(); }
-  refreshModels();
+  renderModelButton();
   renderSessions();
   renderMessages();
   wireChat();
@@ -48,33 +49,19 @@ async function persistMessages() {
 
 let S = {}; // текущие настройки (обновляются из app.js)
 
-function refreshModels() {
-  const sel = $('chat-model');
-  if (!sel) return;
-  sel.replaceChildren();
-  const all = [];
-  for (const pid of Object.keys(PROVIDERS)) {
-    const p = provider(pid);
-    if (!p.models || !p.models.length) continue;
-    for (const m of p.models) {
-      all.push({ pid, id: m.id, name: (p.name || pid) + ' · ' + m.id });
-    }
-  }
-  all.sort((a, b) => a.name.localeCompare(b.name));
-  const cur = all.find(x => x.pid === S.ai && x.id === S.aimodel);
-  for (const m of all) {
-    const o = document.createElement('option');
-    o.value = m.pid + '::' + m.id;
-    o.textContent = m.name;
-    o.selected = cur ? (m.pid === cur.pid && m.id === cur.id) : false;
-    sel.appendChild(o);
-  }
-  if (!cur && all.length) {
-    const first = all.find(x => x.pid === S.ai) || all[0];
-    sel.value = first.pid + '::' + first.id;
-  } else if (cur) {
-    sel.value = cur.pid + '::' + cur.id;
-  }
+/* Кнопка-пикер модели чата (вместо огромного списка «все провайдеры × все модели»). */
+function renderModelButton() {
+  const btn = $('btnChatPickModel');
+  if (!btn) return;
+  const pid = S.ai || 'pollinations';
+  const p = provider(pid);
+  const mid = S.aimodel || (p.models[0] ? p.models[0].id : 'openai');
+  const mt = modelMeta(pid, mid);
+  btn.textContent = '🔍 ' + (mt.nokey ? '🆓 ' : '') + (mt.label || mid) + ' — ' + mt.providerName;
+  btn.style.overflow = 'hidden';
+  btn.style.textOverflow = 'ellipsis';
+  btn.style.maxWidth = '70vw';
+  btn.title = (mt.free ? 'Бесплатно' : 'Платно') + (mt.vision ? ' · vision' : '') + ' · ' + pid + ' / ' + mid;
 }
 
 function renderSessions() {
@@ -125,12 +112,6 @@ function renderMessages() {
 }
 
 function resolveModel() {
-  const sel = $('chat-model');
-  const v = (sel && sel.value) || '';
-  if (v && v.includes('::')) {
-    const [pid, mid] = v.split('::');
-    return { provider: pid, model: mid };
-  }
   return { provider: S.ai, model: S.aimodel };
 }
 
@@ -219,12 +200,26 @@ function wireChat() {
   const del = $('btnChatDel');
   const file = $('chat-file');
   const sessionsSel = $('chat-sessions');
-  const modelSel = $('chat-model');
+  const modelBtn = $('btnChatPickModel');
   const btnNew = $('btnChatNew');
 
   if (send) send.addEventListener('click', () => ask());
   if (input) input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
+  });
+  if (modelBtn) modelBtn.addEventListener('click', () => {
+    if (asking) return;
+    openModelPicker({
+      settings: S || {},
+      onSelect: async (pid, mid) => {
+        S = { ...S, ai: pid, aimodel: mid };
+        renderModelButton();
+        try {
+          await idbSet(KEY_SETTINGS, S);
+        } catch (e) { console.warn(e); }
+        if (window.onSettingsChanged) window.onSettingsChanged(S);
+      },
+    });
   });
   if (file) file.addEventListener('change', () => {
     for (const f of file.files) {
@@ -268,20 +263,9 @@ function wireChat() {
     renderSessions();
     renderMessages();
   });
-  if (modelSel) modelSel.addEventListener('change', async () => {
-    if (asking) return;
-    const v = modelSel.value;
-    if (!v.includes('::')) return;
-    const [pid, mid] = v.split('::');
-    S = { ...S, ai: pid, aimodel: mid };
-    try {
-      await idbSet(KEY_SETTINGS, S);
-    } catch (e) { console.warn(e); }
-    if (window.onSettingsChanged) window.onSettingsChanged(S);
-  });
 }
 
 /* вызывается из app.js при старте и при изменении настроек */
-export function setChatSettings(s) { S = s || {}; refreshModels(); }
+export function setChatSettings(s) { S = s || {}; renderModelButton(); }
 
 export const chatApi = { initChat, renderAttachments, setChatSettings };

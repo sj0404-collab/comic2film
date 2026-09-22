@@ -109,7 +109,7 @@
         <div class="row head">
           <h2>💬 Чат с ИИ</h2>
           <div class="row wrap">
-            <select id="chat-model" title="Модель чата"></select>
+            <button id="btnChatPickModel" class="btn mini" title="Выбрать модель ИИ для чата">🔍 Модель: …</button>
             <button id="btnChatNew" class="btn mini">+ Новая сессия</button>
           </div>
         </div>
@@ -225,10 +225,6 @@
             </select>
             <select id="opt-yolo-model" style="flex:1;min-width:160px" title="Версия YOLO-модели для детекции пузырей">
               <option value="yolov8m-seg-bubble">YOLOv8m-seg (kitsumed/speech-bubble) — 108МБ, по умолчанию</option>
-              <option value="yolov8n-seg-bubble">YOLOv8n-seg (nano) — быстрее, ~6МБ</option>
-              <option value="yolov8s-seg-bubble">YOLOv8s-seg (small) — ~22МБ</option>
-              <option value="yolov8l-seg-bubble">YOLOv8l-seg (large) — точнее, ~180МБ</option>
-              <option value="yolov8x-seg-bubble">YOLOv8x-seg (xlarge) — максимально точно, ~260МБ</option>
               <option value="custom">Свой URL .onnx…</option>
             </select>
           </div>
@@ -275,8 +271,12 @@
           </div>
           <div class="field" id="f-opt-aimodel">
             <label>Модель <button type="button" id="btnRefreshModels" class="btn mini" style="padding:2px 8px;font-size:12px">🔄 обновить список</button></label>
-            <select id="opt-aimodel"></select>
-            <input type="text" id="opt-aimodel-custom" placeholder="своя модель (gemini-2.0-flash / gpt-4o-mini)">
+            <div class="row" style="gap:8px;align-items:center">
+              <button type="button" id="btnPickModel" class="btn" style="flex:1;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">🔍 Выбрать модель…</button>
+            </div>
+            <div id="aimodel-current" class="muted" style="margin-top:4px"></div>
+            <input type="text" id="opt-aimodel-custom" class="hidden" placeholder="своя модель (gemini-2.0-flash / gpt-4o-mini)">
+            <p class="muted" style="margin-top:4px">Фильтры: без ключа · бесплатные · платные · провайдер. ⚡ — проверить, отвечает ли модель реально.</p>
           </div>
           <label>Голосовой движок</label>
           <select id="opt-voicebackend">

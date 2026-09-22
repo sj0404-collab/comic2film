@@ -4,7 +4,8 @@ import {
   toast, uuid, download, fmtDur, loadImage,
 } from './util.js';
 import { idbSet, idbGet, idbDel, KEY_PROJECT, KEY_SETTINGS } from './store.js';
-import { analyzeRoles, translateLines, FREE_MODELS, refreshFreeModels, PROVIDERS, provider, providerHasVision, isFreeModel } from './ai.js';
+import { analyzeRoles, translateLines, FREE_MODELS, refreshFreeModels, PROVIDERS, provider, providerHasVision, isFreeModel, modelMeta } from './ai.js';
+import { openModelPicker, setSettingsGetter as modelsuiSetSettings } from './modelsui.js';
 import { extractPages, clipsFromAudio } from './import.js';
 import { ocrPage } from './ocr.js';
 import { bubbleModelStatus, bubbleModelTargetBytes, downloadBubbleModel, bubbleModelClear, setYoloModel, getYoloModel, getModelInfo, YOLO_MODELS } from './yolo.js';
@@ -897,7 +898,12 @@ function bindSel(id) {
   elEl.addEventListener('change', () => {
     settings[key] = elEl.value;
     if (key === 'ai') {
-      if (!defaultModelFor(settings.ai) && !settings.aimodel) settings.aimodel = 'openai';
+      const p = provider(settings.ai);
+      if (settings.aimodel && p.models && !p.models.some(m => m.id === settings.aimodel)) {
+        settings.aimodel = p.models[0] ? p.models[0].id : 'openai';
+      } else if (!settings.aimodel) {
+        settings.aimodel = p.models[0] ? p.models[0].id : 'openai';
+      }
       populateModelSelect();
     }
     if (key === 'ai' || key === 'ocr') syncProviderUi();
@@ -914,8 +920,18 @@ function defaultModelFor(pid) {
 function populateProviderSelect() {
   const sel = $('opt-ai');
   sel.replaceChildren();
-  Object.entries(PROVIDERS).forEach(([id, p]) => {
-    sel.appendChild(el('option', { value: id }, [p.name.includes('·') ? p.name : p.name + (p.key === false ? ' · без ключа' : ' · ключ')]));
+  const entries = Object.entries(PROVIDERS);
+  entries.sort((a, b) => {
+    const ka = (a[1].curated ? 0 : 1), kb = (b[1].curated ? 0 : 1);
+    if (ka !== kb) return ka - kb;
+    const fa = (a[1].key === false ? 0 : 1), fb = (b[1].key === false ? 0 : 1);
+    if (fa !== fb) return fa - fb;
+    return a[1].name.localeCompare(b[1].name, 'ru');
+  });
+  entries.forEach(([id, p]) => {
+    const tag = p.key === false ? ' 🆓 без ключа' : (p.curated ? ' 🔑' : ' · каталог');
+    if (!p.models || !p.models.length) return;
+    sel.appendChild(el('option', { value: id }, [p.name.includes('·') ? p.name : p.name + tag]));
   });
   if (!PROVIDERS[settings.ai]) settings.ai = 'pollinations';
   sel.value = settings.ai;
@@ -929,7 +945,13 @@ function populateOcrSelect() {
   sel.appendChild(el('option', { value: 'tesseract' }, ['Tesseract (локально, без интернета)']));
   const vision = Object.entries(PROVIDERS)
     .filter(([id, p]) => providerHasVision(id))
-    .sort((a, b) => a[1].name.localeCompare(b[1].name, 'ru'));
+    .sort((a, b) => {
+      const ka = (a[1].curated ? 0 : 1), kb = (b[1].curated ? 0 : 1);
+      if (ka !== kb) return ka - kb;
+      const fa = (a[1].key === false ? 0 : 1), fb = (b[1].key === false ? 0 : 1);
+      if (fa !== fb) return fa - fb;
+      return a[1].name.localeCompare(b[1].name, 'ru');
+    });
   let hasCur = 'tesseract' === cur;
   vision.forEach(([id, p]) => {
     sel.appendChild(el('option', { value: id }, [id + ' — ' + p.name.split(' ·')[0] + (p.key === false ? ' (без ключа)' : '')]));
@@ -938,59 +960,64 @@ function populateOcrSelect() {
   sel.value = hasCur ? cur : 'tesseract';
 }
 
-/* Селект моделей из каталога провайдера + поле свободного ввода. */
+/* Селект моделей: кнопка-пикер + поле свободного ввода. */
 function setupModelUi() {
-  const sel = $('opt-aimodel');
   const custom = $('opt-aimodel-custom');
-  populateModelSelect();
-  custom.value = settings.aimodel || '';
+  modelsuiSetSettings(() => settings);
+  renderModelCurrent();
   custom.dataset.typed = '0';
-  sel.addEventListener('change', () => {
-    settings.aimodel = sel.value;
-    custom.value = settings.aimodel;
-    custom.dataset.typed = '0';
-    autoSaveTimer();
+  $('btnPickModel').addEventListener('click', () => {
+    openModelPicker({
+      settings,
+      onSelect: (pid, mid) => {
+        settings.ai = pid;
+        settings.aimodel = mid;
+        $('opt-ai').value = pid;
+        $('opt-aimodel-custom').value = mid;
+        $('opt-aimodel-custom').dataset.typed = '0';
+        syncProviderUi();
+        renderModelCurrent();
+        populateOcrSelect();
+        autoSaveTimer();
+        toast('Модель: ' + provider(pid).name.split(' ·')[0] + ' · ' + mid);
+        if (window.onSettingsChanged) window.onSettingsChanged(settings);
+      },
+    });
   });
-  custom.addEventListener('input', () => { settings.aimodel = custom.value; custom.dataset.typed = '1'; autoSaveTimer(); });
+  custom.addEventListener('input', () => { settings.aimodel = custom.value; custom.dataset.typed = '1'; renderModelCurrent(); autoSaveTimer(); });
 }
 
-function populateModelSelect() {
-  const sel = $('opt-aimodel');
+/* Текущая выбранная модель: подпись на кнопке и подсказка. */
+function renderModelCurrent() {
+  const btn = $('btnPickModel');
+  const cur = $('aimodel-current');
+  if (!btn || !cur) return;
   const p = provider(settings.ai);
-  sel.replaceChildren();
-  if (settings.ai !== 'pollinations') {
-    (p.models || []).forEach((m) => {
-      const tag = m.free === true ? ' · бесплатно' : (m.free === false ? ' · платно' : '');
-      sel.appendChild(el('option', { value: m.id }, [(m.label || m.id) + tag]));
-    });
-    if (settings.aimodel && !(p.models || []).some((m) => m.id === settings.aimodel)) {
-      sel.appendChild(el('option', { value: settings.aimodel }, [settings.aimodel + ' · своя']));
-    }
-  } else {
-    const list = FREE_MODELS.slice();
-    if (settings.aimodel && !FREE_MODELS.includes(settings.aimodel) && !list.includes(settings.aimodel)) list.unshift(settings.aimodel);
-    list.forEach((v) => sel.appendChild(el('option', { value: v }, [v + ' · free'])));
-  }
-  const inList = Array.from(sel.options).some((o) => o.value === settings.aimodel);
-  sel.value = inList ? settings.aimodel : (sel.options[0] ? sel.options[0].value : '');
-  if (!settings.aimodel) settings.aimodel = sel.value;
+  const pid = settings.ai;
+  const mid = settings.aimodel || (p.models[0] ? p.models[0].id : 'openai');
+  const mt = modelMeta(pid, mid);
+  btn.textContent = '🔍 ' + (mt.nokey ? '🆓 ' : mt.free ? '' : '') + (mt.label || mid) + ' — ' + mt.providerName;
+  const tags = [
+    mt.nokey ? 'без ключа' : (mt.free ? 'бесплатно' : 'платно'),
+    mt.vision ? 'vision' : '',
+    mt.curated ? 'проверено' : 'каталог',
+  ].filter(Boolean);
+  cur.textContent = 'Провайдер: ' + pid + (mt.nokey ? ' (без ключа)' : '') + ' · ' + mid + ' · ' + tags.join(' / ');
 }
+
+function populateModelSelect() { renderModelCurrent(); }
 
 function syncModelUi() {
-  const sel = $('opt-aimodel');
   const custom = $('opt-aimodel-custom');
-  if (custom.dataset.typed !== '1') custom.value = settings.aimodel || '';
-  const inList = Array.from(sel.options).some((o) => o.value === settings.aimodel);
-  if (!inList && sel.options[0]) { sel.value = custom.dataset.typed === '1' ? settings.aimodel : sel.options[0].value; }
+  if (custom && custom.dataset.typed !== '1') custom.value = settings.aimodel || '';
+  renderModelCurrent();
 }
 
 async function refreshModelList() {
-  if (settings.ai !== 'pollinations') { toast('Список бесплатных моделей доступен только для Pollinations', 'err'); return; }
-  toast('Обновляю список бесплатных моделей…');
+  toast('Обновляю список моделей без ключа…');
   const list = await refreshFreeModels();
-  populateModelSelect();
-  syncModelUi();
-  toast('Бесплатных моделей без ключа: ' + list.length + ' (' + list.join(', ') + ')');
+  renderModelCurrent();
+  toast('Моделей без ключа (Pollinations): ' + list.length + ' (' + list.slice(0, 10).join(', ') + (list.length > 10 ? '…' : '') + ')');
 }
 function bindInp(id) {
   const elEl = $(id);
@@ -1018,8 +1045,8 @@ function syncProviderUi() {
   const keyless = settings.ai === 'pollinations';
   $('f-opt-key').hidden = !(p.key === true);
   $('f-opt-aiurl').hidden = !custom;
-  $('opt-aimodel').hidden = custom;
-  $('opt-aimodel-custom').hidden = keyless;
+  $('f-opt-aimodel').hidden = false;
+  $('opt-aimodel-custom').hidden = !(custom || keyless);
   $('f-opt-proxy').hidden = settings.voiceBackend !== 'edge-proxy';
 }
 

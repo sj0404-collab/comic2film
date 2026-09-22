@@ -147,7 +147,7 @@ export const CURATED_PROVIDERS = {
 function catalog() {
   const all = {};
   for (const [id, p] of Object.entries(CURATED_PROVIDERS)) {
-    all[id] = { ...p, models: (p.models || []).map((m) => ({ ...m })) };
+    all[id] = { ...p, curated: true, models: (p.models || []).map((m) => ({ ...m })) };
   }
   for (const [id, d] of Object.entries(MODELS_DEV)) {
     const mdev = (d.models || []).map((arr) => {
@@ -166,6 +166,7 @@ function catalog() {
         key: true,
         openai: d.fmt === 'openai',
         anthropic: d.fmt === 'anthropic',
+        curated: false,
         endpoint: d.endpoint,
         vision: d.vision === true,
         models: mdev,
@@ -186,6 +187,58 @@ export function isFreeModel(pid, mid) {
 }
 
 export function providerNeedsKey(pid) { return provider(pid).key === true; }
+
+/* Категория модели: 'free' (без затрат; включает без-ключ) или 'paid'. */
+export function modelKind(pid, mid) {
+  const p = provider(pid);
+  if (p.key === false) return 'free';
+  const m = (p.models || []).find((x) => x.id === mid);
+  return m && m.free === true ? 'free' : 'paid';
+}
+
+/* Метаданные модели для пикера/фильтров. */
+export function modelMeta(pid, mid) {
+  const p = provider(pid);
+  const m = (p.models || []).find((x) => x.id === mid) || {};
+  return {
+    pid,
+    mid,
+    label: m.label || mid,
+    providerName: (p.name || pid).split(' ·')[0],
+    nokey: p.key === false,
+    free: modelKind(pid, mid) === 'free',
+    paid: modelKind(pid, mid) === 'paid',
+    vision: p.vision === true,
+    curated: p.curated === true,
+    requiresKey: p.key === true,
+  };
+}
+
+/* ================================================================
+ * Живая проверка модели («отвечает ли реально»).
+ * Статус кэшируется в MODEL_HEALTH на время сессии.
+ * ================================================================ */
+export const MODEL_HEALTH = new Map(); // `${pid}::${mid}` -> {ok,ms,err,ts}
+
+export async function probeModel(settings, pid, mid) {
+  const key = pid + '::' + mid;
+  const s = { ...settings, ai: pid, aimodel: mid };
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 20000);
+  const t0 = performance.now();
+  try {
+    await chat(s, [{ role: 'user', content: 'ping' }], { signal: ctl.signal, minGap: 0 });
+    const res = { ok: true, ms: Math.round(performance.now() - t0), err: '', ts: Date.now() };
+    MODEL_HEALTH.set(key, res);
+    return res;
+  } catch (e) {
+    const res = { ok: false, ms: Math.round(performance.now() - t0), err: String((e && e.message) || e).slice(0, 140), ts: Date.now() };
+    MODEL_HEALTH.set(key, res);
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /* Умеет ли провайдер обрабатывать картинки (vision). */
 export function providerHasVision(pid) {
@@ -260,6 +313,7 @@ export async function chat(settings, messages, opts = {}) {
     messages: messagesWithImages(messages, opts.images),
     json: opts.json,
     gap: opts.minGap ?? settings.aiGap ?? 2500,
+    signal: opts.signal,
   });
 }
 
@@ -297,13 +351,13 @@ export async function chatWithImage(settings, messages, imageDataURL) {
 /* Универсальный вызов OpenAI-совместимых API (Pollinations/OpenRouter/OpenAI/
  * Groq/DeepSeek/Mistral/Together/xAI/Perplexity/Cerebras/custom) с ретраями
  * при 429 и парсингом JSON-ответа. */
-async function openAICompat({ name, endpoint, headers = {}, key = '', model, messages, json = false, gap = 2500 }) {
+async function openAICompat({ name, endpoint, headers = {}, key = '', model, messages, json = false, gap = 2500, signal }) {
   const body = { model, messages, temperature: settings_tmp(model, json) };
   if (json) body.response_format = { type: 'json_object' };
   const hd = { 'Content-Type': 'application/json', ...(key ? { Authorization: 'Bearer ' + key } : {}), ...headers };
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
-      const r = await fetch(endpoint, { method: 'POST', headers: hd, body: JSON.stringify(body) });
+      const r = await fetch(endpoint, { method: 'POST', headers: hd, body: JSON.stringify(body), signal });
       if (await maybeCooldown(r, 15000)) continue;
       if (!r.ok) {
         const t = await r.text().catch(() => '');
@@ -314,6 +368,7 @@ async function openAICompat({ name, endpoint, headers = {}, key = '', model, mes
       if (json) { const parsed = parseJsonLoose(typeof out === 'string' ? out : JSON.stringify(out)); if (parsed) return parsed; }
       return out;
     } catch (e) {
+      if (e.name === 'AbortError') throw e;
       if (attempt === 3) throw e;
       await sleep(gap * (attempt + 1));
     }
@@ -338,12 +393,13 @@ async function chatGemini(settings, messages, opts = {}) {
   let attempt = 0;
   while (true) {
     try {
-      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: parts }) });
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: parts }), signal: opts.signal });
       if (await maybeCooldown(r, 15000)) continue;
       if (!r.ok) throw new Error(`Gemini ${r.status}`);
       const j = await r.json();
       return j.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
     } catch (e) {
+      if (e.name === 'AbortError') throw e;
       if (attempt === 3) throw e;
       attempt++;
       await sleep(gap * attempt);
@@ -380,6 +436,7 @@ async function chatAnthropic(settings, messages, opts = {}) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify(body),
+        signal: opts.signal,
       });
       if (await maybeCooldown(r, 15000)) continue;
       if (!r.ok) throw new Error(`Claude ${r.status}`);
@@ -388,6 +445,7 @@ async function chatAnthropic(settings, messages, opts = {}) {
       if (opts.json) { const parsed = parseJsonLoose(out); if (parsed) return parsed; }
       return out;
     } catch (e) {
+      if (e.name === 'AbortError') throw e;
       if (attempt === 3) throw e;
       attempt++;
       await sleep(gap * attempt);

@@ -153,3 +153,18 @@ a{color:var(--acc)}
 #term-container{flex:1;overflow:hidden;background:#1e1e1e}
 #term-container .xterm{height:100%}
 .mini{padding:4px 8px;font-size:12px}
+
+/* model picker */
+.mp-rows{max-height:52vh;overflow:auto;display:flex;flex-direction:column;gap:6px;margin-top:4px}
+.mp-row{display:flex;align-items:center;gap:10px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 10px;cursor:pointer;transition:.12s}
+.mp-row:active{transform:scale(.99)}
+.mp-row.sel{border-color:var(--acc);background:#18233c}
+.mp-row .grow{flex:1;min-width:0}
+.mp-short{color:var(--mut);font-size:12px}
+.mp-tag{display:inline-block;font-size:11px;line-height:1.5;padding:0 7px;border-radius:999px;border:1px solid var(--line);margin:1px 3px 1px 0;background:var(--bg)}
+.mp-tag.green{color:var(--ok);border-color:var(--ok)}
+.mp-tag.blue{color:var(--acc);border-color:var(--acc)}
+.mp-tag.red{color:var(--bad);border-color:var(--bad)}
+.mp-tag.warn{color:var(--warn);border-color:var(--warn)}
+.mp-ok{color:var(--ok);font-size:13px;white-space:nowrap}
+.mp-bad{color:var(--bad);font-size:13px;white-space:nowrap}

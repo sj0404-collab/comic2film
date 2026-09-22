@@ -20,38 +20,6 @@ export const YOLO_MODELS = {
     nPred: 37,
     imgsz: 640,
   },
-  'yolov8n-seg-bubble': {
-    id: 'yolov8n-seg-bubble',
-    name: 'YOLOv8n-seg (nano, speech-bubble)',
-    url: 'https://huggingface.co/kitsumed/yolov8n_seg-speech-bubble/resolve/main/model_dynamic.onnx',
-    size: 6200000,
-    nPred: 37,
-    imgsz: 640,
-  },
-  'yolov8s-seg-bubble': {
-    id: 'yolov8s-seg-bubble',
-    name: 'YOLOv8s-seg (small, speech-bubble)',
-    url: 'https://huggingface.co/kitsumed/yolov8s_seg-speech-bubble/resolve/main/model_dynamic.onnx',
-    size: 22000000,
-    nPred: 37,
-    imgsz: 640,
-  },
-  'yolov8l-seg-bubble': {
-    id: 'yolov8l-seg-bubble',
-    name: 'YOLOv8l-seg (large, speech-bubble)',
-    url: 'https://huggingface.co/kitsumed/yolov8l_seg-speech-bubble/resolve/main/model_dynamic.onnx',
-    size: 180000000,
-    nPred: 37,
-    imgsz: 640,
-  },
-  'yolov8x-seg-bubble': {
-    id: 'yolov8x-seg-bubble',
-    name: 'YOLOv8x-seg (xlarge, speech-bubble)',
-    url: 'https://huggingface.co/kitsumed/yolov8x_seg-speech-bubble/resolve/main/model_dynamic.onnx',
-    size: 260000000,
-    nPred: 37,
-    imgsz: 640,
-  },
 };
 
 const ORT_SRC = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js';
@@ -119,12 +87,13 @@ export async function bubbleModelClear() { await idbDel(modelKey(_currentModelId
 /** Скачать модель (с прогрессом) и вернуть [InferenceSession, bytes]. */
 export async function downloadBubbleModel(onProgress, modelId = _currentModelId) {
   const ort = await ensureOrt();
-  const model = YOLO_MODELS[modelId] || { url: settings?.yoloCustomUrl, size: 0, nPred: 37, imgsz: 640 };
+  const model = YOLO_MODELS[modelId];
   const key = modelKey(modelId);
   const cached = await idbGet(key);
   if (cached && cached.byteLength) {
     return [await ort.InferenceSession.create(cached, { executionProviders: ['wasm'] }), cached];
   }
+  if (!model || !model.url) throw new Error('модель ' + modelId + ': не задан URL');
   const r = await fetch(model.url);
   if (!r.ok) throw new Error('модель ' + modelId + ': HTTP ' + r.status);
   const total = +r.headers.get('content-length') || 0;
