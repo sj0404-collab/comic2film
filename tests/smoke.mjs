@@ -120,8 +120,10 @@ ok(providerKeyUrl('opencode').includes('opencode.ai'), 'opencode: ссылка �
 ok(!PROVIDERS['opencode-go'], 'opencode-go (устаревший) не добавлен в каталог');
 ok(!MODELS_DEV.opencode, 'список моделей Zen не раздут автообновляемой копией models.dev (curated)');
 ok(Object.keys(provider('opencode').models).length >= 10, 'opencode: curated-список моделей (>=10)');
-ok(provider('opencode').models.some(m => m.free), 'opencode: есть бесплатные модели (qwen3.6-plus-free и др.)');
-ok(isFreeModel('opencode', 'qwen3.6-plus-free') === true, 'opencode: qwen3.6-plus-free помечена бесплатной');
+ok(provider('opencode').models.some(m => m.free) && provider('opencode').models.some(m => m.nokey), 'opencode: есть демо-модели без ключа');
+ok(isFreeModel('opencode', 'big-pickle') === true, 'opencode: big-pickle помечена бесплатной (без ключа)');
+ok(provider('opencode').models.some(m => m.id === 'big-pickle') && ai.modelMeta('opencode', 'big-pickle').nokey === true, 'opencode: big-pickle — демо-модель «без ключа»');
+ok(!provider('opencode').models.some(m => m.id === 'qwen3.6-plus-free'), 'opencode: нерабочие анонимные free-имена (qwen3.6-plus-free) заменены на демо-модели');
 ok(isFreeModel('opencode', 'gpt-5.4-pro') === false, 'opencode: gpt-5.4-pro платная');
 ok(isOrchestrator('opencode') === true, 'opencode помечен как оркестратор (один ключ → любые модели)');
 ok(PROVIDERS.custom.name.includes('Свой') && !PROVIDERS.custom.name.includes('M-PM-'), 'custom-провайдер: имя без mojibake');

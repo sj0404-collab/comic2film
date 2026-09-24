@@ -30,6 +30,11 @@ function flatModels() {
   return rows;
 }
 
+/* Есть ли у провайдера демо-модели «без ключа» (напр. free tier Zen). */
+function providerHasNokey(pid) {
+  return (provider(pid).models || []).some((m) => m.nokey === true);
+}
+
 /* 0..1 — проверенные напрямую (OpenAI/Gemini/Claude/…). По нарастающей
  * идут шлюзы/агрегаторы из каталога models.dev. */
 function rank(mt) {
@@ -61,6 +66,7 @@ function match(mt, f) {
 function tagHtml(mt) {
   const t = [];
   if (mt.nokey) t.push('<span class="mp-tag green">🆓 без ключа</span>');
+  if (mt.nokey && mt.requiresKey) t.push('<span class="mp-tag">🔁 через релей</span>');
   else if (mt.free) t.push('<span class="mp-tag blue">бесплатно</span>');
   else t.push('<span class="mp-tag red">платно</span>');
   if (mt.vision) t.push('<span class="mp-tag warn">👁 vision</span>');
@@ -103,9 +109,10 @@ export function openModelPicker({ settings, onSelect } = {}) {
   $body.replaceChildren();
   $('modal').classList.remove('hidden');
 
-  /* По умолчанию — только модели, которым не нужен ключ (Pollinations anonymous).
-   * big-pickle и прочие free-модели Zen вместе с ним требуют регистрации ключа
-   * (403 «free tier only from within OpenCode»), поэтому в «без ключа» не попадают. */
+  /* По умолчанию — только модели, которым не нужен ключ: Pollinations
+   * anonymous + демо-модели Zen (big-pickle и др.). Демо-модели Zen ходят
+   * через релей (см. relay/zen-relay.mjs, URL — в настройках), т.к. их
+   * free tier пускает только запросы «как opencode CLI». */
   const f = { cat: 'nokey', tab: 'all', quality: 'curated', q: '' };
   let visibleKeys = [];
 
@@ -188,7 +195,7 @@ export function openModelPicker({ settings, onSelect } = {}) {
             f.quality = 'all';
             qualSel.value = 'all';
           }
-          if (f.cat === 'nokey' && provider(mt.pid).key === true) { f.cat = 'all'; fillChips(); }
+          if (f.cat === 'nokey' && provider(mt.pid).key === true && !providerHasNokey(mt.pid)) { f.cat = 'all'; fillChips(); }
           fillTabs();
           render();
         });
@@ -261,6 +268,10 @@ export function openModelPicker({ settings, onSelect } = {}) {
         a.rel = 'noopener';
         a.textContent = '📚 Список моделей Zen → (можно вписать любую)';
         head.appendChild(a);
+        const hint = document.createElement('div');
+        hint.className = 'mp-provm muted';
+        hint.textContent = '🆓 Демо-модели (big-pickle, mimo-v2.5-free, nemotron-3-ultra-free и др.) работают без ключа через релей — в настройках задайте URL (node relay/zen-relay.mjs).';
+        head.appendChild(hint);
       }
     }
 

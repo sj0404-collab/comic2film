@@ -35,6 +35,7 @@ function defaultSettings() {
   return {
     ocr: 'tesseract', detect: 'yolo', lang: 'rus', trlang: 'ru',
     ai: 'pollinations', key: '', aiurl: '', aimodel: 'openai', aiGap: 2500,
+    zenRelay: '',
     voiceBackend: 'edge', proxy: '',
     backendUrl: '', backendToken: '',
     gap: 350, res: '1080x1920', fps: 30, zoom: 'smart', caption: 'bubble', biling: 'orig',
@@ -870,6 +871,7 @@ function bindSettings() {
   bindSel('opt-ai');
   bindInp('opt-key');
   bindInp('opt-aiurl');
+  bindInp('opt-zenrelay');
   setupModelUi();
   bindSel('opt-voicebackend');
   bindInp('opt-proxy');
@@ -1045,6 +1047,7 @@ function syncProviderUi() {
   const keyless = settings.ai === 'pollinations';
   $('f-opt-key').hidden = !(p.key === true);
   $('f-opt-aiurl').hidden = !custom;
+  $('f-opt-zenrelay').hidden = settings.ai !== 'opencode';
   $('f-opt-aimodel').hidden = false;
   $('opt-aimodel-custom').hidden = !(custom || keyless || settings.ai === 'opencode');
   $('f-opt-proxy').hidden = settings.voiceBackend !== 'edge-proxy';

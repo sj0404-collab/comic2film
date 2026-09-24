@@ -97,19 +97,14 @@ jobs:
             "Сборка в GitHub Actions по тегу $TAG." \
             "" \
             "**Что нового в $VERSION:**" \
-            "- пикер моделей по умолчанию открывается с фильтром «🆓 без ключа» — сразу видно только модели, которым ключ не нужен;" \
-            "- при выборе провайдера с ключом фильтр мягко сбрасывается на «Все»." \
+            "- **демо-модели OpenCode Zen работают без ключа**: big-pickle, mimo-v2.5-free, mimo-v2.6-flash-free, nemotron-3-ultra-free, nemotron-3.5-lightning-free, ling-3.0-flash-fin-free, space-bunny-free — это free tier с «identity-гейтом» (пропускает только запросы как opencode CLI: User-Agent: opencode/1.18.31, заголовки x-opencode-*, stream + официальные тулы);" \
+            "- браузер не может отправить такие заголовки сам (User-Agent запрещён, у zen нет CORS), поэтому демо-модели ходят через мини-релей **relay/zen-relay.mjs** — задайте его URL в настройках («URL Zen-релея», напр. http://localhost:8789) — **проверено вживую через релей: отвечает**;" \
+            "- в фильтре «🆓 без ключа» теперь видно и демо-модели Zen (помечены «🔁 через релей»); нерабочие анонимные имена (qwen3.6-plus-free и т.п.) из каталога убраны — они отдаются только с ключом (401/500)." \
             "" \
-            "**🧪 Живой тест ВСЕХ моделей каталога (этот релиз):**" \
-            "- **Без ключа — отвечают реально все 5** анонимных моделей Pollinations: openai / openai-fast / gpt-oss / gpt-oss-20b / ovh-reasoning (иногда 429 «queue full» = rate limit одного IP, не поломка);" \
-            "- **С ключом:** 175 из 198 провайдеров подтвердили живой endpoint (401/403 = нужен корректный ключ), включая openrouter, opencode (Zen), openai, anthropic, groq, deepseek, mistral, cerebras, together, perplexity, zhipuai, moonshotai и другие;" \
-            "- **Ложные срабатывания проверки закрыты:** iflowcn и agentrouter возвращают HTTP 200, но с телом-ошибкой (JSON «Invalid apiKey» / WAF-капча) — без ключа они НЕ работают;" \
-            "- **Про free-модели Zen:** big-pickle, qwen3.6-plus-free и др. бесплатны по тарифу, но отдаются только с ключом Zen — без ключа проверено 401/403 (big-pickle: «free tier only from within OpenCode»)." \
-            "" \
-            "**Ранее в 1.1.1:** OpenCode Zen вернулся как реальный провайдер (opencode.ai/zen): один ключ → любые модели, любую модель можно вписать вручную." \
+            "**Ранее:** 1.1.3 — живой тест всех моделей каталога (без ключа: все 5 моделей Pollinations; с ключом: 175/198 провайдеров, ложные срабатывания iflowcn/agentrouter закрыты). 1.1.2 — пикер по умолчанию с фильтром «без ключа». 1.1.1 — OpenCode Zen вернулся как реальный провайдер (opencode.ai/zen): один ключ → любые модели, любую модель можно вписать вручную." \
             "" \
             "**APK (release-signed):** voicecomic-$TAG.apk")
           gh release create "$TAG" "voicecomic-$TAG.apk" \
             --target "${GITHUB_SHA}" \
-            --title "VoiceComic $VERSION — по умолчанию без ключа; живой тест всех моделей каталога" \
+            --title "VoiceComic $VERSION — демо-модели Zen (big-pickle) без ключа через релей" \
             --notes "$NOTES"

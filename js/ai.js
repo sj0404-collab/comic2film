@@ -41,6 +41,17 @@ export const CURATED_PROVIDERS = {
     name: 'OpenCode Zen · реальный шлюз', key: true, openai: true, vision: true, orchestrator: true,
     endpoint: 'https://opencode.ai/zen/v1/chat/completions',
     models: [
+      /* free tier Zen пускает БЕЗ ключа только «демо-модели opencode CLI»
+       * (нужны identity-заголовки + stream + official tools). Из браузера это
+       * невозможно из-за User-Agent/CORS, поэтому они ходят через релей:
+       * relay/zen-relay.mjs (URL — в настройках, поле «URL Zen-релея»). */
+      { id: 'big-pickle', free: true, nokey: true, label: 'big-pickle (без ключа)' },
+      { id: 'mimo-v2.5-free', free: true, nokey: true, label: 'Mimo v2.5 (без ключа)' },
+      { id: 'mimo-v2.6-flash-free', free: true, nokey: true, label: 'Mimo v2.6 Flash (без ключа)' },
+      { id: 'nemotron-3-ultra-free', free: true, nokey: true, label: 'Nemotron 3 Ultra (без ключа)' },
+      { id: 'nemotron-3.5-lightning-free', free: true, nokey: true, label: 'Nemotron 3.5 Lightning (без ключа)' },
+      { id: 'ling-3.0-flash-fin-free', free: true, nokey: true, label: 'Ling 3.0 Flash Fin (без ключа)' },
+      { id: 'space-bunny-free', free: true, nokey: true, label: 'Space Bunny (без ключа)' },
       { id: 'gpt-5.4', label: 'GPT-5.4' },
       { id: 'gpt-5.4-pro', label: 'GPT-5.4 Pro' },
       { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
@@ -49,11 +60,6 @@ export const CURATED_PROVIDERS = {
       { id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
       { id: 'grok-4.7', label: 'Grok 4.7' },
       { id: 'deepseek-v4-flash-vision-exp', label: 'DeepSeek V4 Flash Vision' },
-      { id: 'qwen3.6-plus-free', free: true, label: 'Qwen3.6 Plus (free)' },
-      { id: 'kimi-k2.5-free', free: true, label: 'Kimi K2.5 (free)' },
-      { id: 'glm-5-free', free: true, label: 'GLM-5 (free)' },
-      { id: 'minimax-m2.5-free', free: true, label: 'MiniMax M2.5 (free)' },
-      { id: 'deepseek-v4-flash-free', free: true, label: 'DeepSeek V4 Flash (free)' },
     ],
   },
   openai: {
@@ -237,7 +243,15 @@ export function provider(id) { return PROVIDERS[id] || PROVIDERS.custom; }
 
 export function isFreeModel(pid, mid) {
   const m = (provider(pid).models || []).find((x) => x.id === mid);
-  return !!(m && (m.free || provider(pid).key === false));
+  return !!(m && (m.free || m.nokey || provider(pid).key === false));
+}
+
+/* Демо-модель «без ключа» у провайдера с ключом (напр. free tier Zen:
+ * big-pickle и др.) — ходит через релей, который добавляет identity-заголовки
+ * opencode CLI. */
+export function modelDemoKeyless(pid, mid) {
+  const m = (provider(pid).models || []).find((x) => x.id === mid);
+  return !!(m && m.nokey === true);
 }
 
 export function providerNeedsKey(pid) { return provider(pid).key === true; }
@@ -276,7 +290,7 @@ export function modelMeta(pid, mid) {
     mid,
     label: m.label || mid,
     providerName: (p.name || pid).split(' ·')[0],
-    nokey: p.key === false,
+    nokey: p.key === false || m.nokey === true,
     free: modelKind(pid, mid) === 'free',
     paid: modelKind(pid, mid) === 'paid',
     vision: p.vision === true,
@@ -375,13 +389,26 @@ export async function chat(settings, messages, opts = {}) {
   settings = { ...settings, aimodel: model };
   if (p.gemini) return chatGemini(settings, messages, opts);
   if (p.anthropic) return chatAnthropic(settings, messages, opts);
-  const endpoint = settings.ai === 'custom' ? (settings.aiurl || '') : p.endpoint;
+  let endpoint = settings.ai === 'custom' ? (settings.aiurl || '') : p.endpoint;
+  const key = settings.key || '';
+  if (modelDemoKeyless(settings.ai, model) && !key) {
+    const relay = (settings.zenRelay || '').trim().replace(/\/+$/, '');
+    if (!relay) {
+      throw new Error(
+        `«${model}» — free tier OpenCode Zen без ключа. Браузер не может напрямую ` +
+        'отправить identity-заголовки opencode CLI (User-Agent, x-opencode-*), поэтому ' +
+        'такие модели работают через мини-релей: команда «node relay/zen-relay.mjs», ' +
+        'её URL задайте в настройках («URL Zen-релея»), либо добавьте ключ Zen.'
+      );
+    }
+    endpoint = relay + '/v1/chat/completions';
+  }
   if (!endpoint) throw new Error('Свой провайдер: не задан адрес OpenAI-совместимого API');
   return openAICompat({
     name: (p.name || settings.ai).split(' ·')[0],
     endpoint,
     headers: p.headers || {},
-    key: settings.key || '',
+    key,
     model,
     messages: messagesWithImages(messages, opts.images),
     json: opts.json,
