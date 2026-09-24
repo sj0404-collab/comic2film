@@ -111,5 +111,5 @@ jobs:
             "**APK (release-signed):** voicecomic-$TAG.apk")
           gh release create "$TAG" "voicecomic-$TAG.apk" \
             --target "${GITHUB_SHA}" \
-            --title "VoiceComic $VERSION — OpenCode Zen вернулся (реальный шлюз, любые модели)" \
+            --title "VoiceComic $VERSION — по умолчанию без ключа; живой тест всех моделей каталога" \
             --notes "$NOTES"
