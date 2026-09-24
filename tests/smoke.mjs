@@ -123,6 +123,11 @@ ok(Object.keys(provider('opencode').models).length >= 10, 'opencode: curated-с�
 ok(provider('opencode').models.some(m => m.free) && provider('opencode').models.some(m => m.nokey), 'opencode: есть демо-модели без ключа');
 ok(isFreeModel('opencode', 'big-pickle') === true, 'opencode: big-pickle помечена бесплатной (без ключа)');
 ok(provider('opencode').models.some(m => m.id === 'big-pickle') && ai.modelMeta('opencode', 'big-pickle').nokey === true, 'opencode: big-pickle — демо-модель «без ключа»');
+ok(provider('opencode').models.some(m => m.id === 'muse-spark-1.3-contributor-free' && m.nokey), 'opencode: muse-spark-1.3-contributor-free — демо (Responses)');
+ok(provider('opencode').models.some(m => m.id === 'muse-spark-1.2-contributor-free' && m.nokey), 'opencode: muse-spark-1.2-contributor-free — демо (Responses)');
+ok(provider('opencode').models.some(m => m.id === 'deepseek-v4-flash-free' && m.nokey), 'opencode: deepseek-v4-flash-free — зарегистрирована (провайдер недоступен)');
+ok(!provider('opencode').models.some(m => m.id === 'x-preview-f-free'), 'opencode: x-preview-f-free («Ox Alpha») не отдаётся анонимно (401) — не добавлена');
+ok(provider('opencode').models.filter(m => m.nokey).length === 10, 'opencode: ровно 10 демо-моделей без ключа');
 ok(!provider('opencode').models.some(m => m.id === 'qwen3.6-plus-free'), 'opencode: нерабочие анонимные free-имена (qwen3.6-plus-free) заменены на демо-модели');
 ok(isFreeModel('opencode', 'gpt-5.4-pro') === false, 'opencode: gpt-5.4-pro платная');
 ok(isOrchestrator('opencode') === true, 'opencode помечен как оркестратор (один ключ → любые модели)');

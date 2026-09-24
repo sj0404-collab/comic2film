@@ -97,14 +97,16 @@ jobs:
             "Сборка в GitHub Actions по тегу $TAG." \
             "" \
             "**Что нового в $VERSION:**" \
-            "- **демо-модели OpenCode Zen работают без ключа**: big-pickle, mimo-v2.5-free, mimo-v2.6-flash-free, nemotron-3-ultra-free, nemotron-3.5-lightning-free, ling-3.0-flash-fin-free, space-bunny-free — это free tier с «identity-гейтом» (пропускает только запросы как opencode CLI: User-Agent: opencode/1.18.31, заголовки x-opencode-*, stream + официальные тулы);" \
-            "- браузер не может отправить такие заголовки сам (User-Agent запрещён, у zen нет CORS), поэтому демо-модели ходят через мини-релей **relay/zen-relay.mjs** — задайте его URL в настройках («URL Zen-релея», напр. http://localhost:8789) — **проверено вживую через релей: отвечает**;" \
-            "- в фильтре «🆓 без ключа» теперь видно и демо-модели Zen (помечены «🔁 через релей»); нерабочие анонимные имена (qwen3.6-plus-free и т.п.) из каталога убраны — они отдаются только с ключом (401/500)." \
+            "- **+2 новые демо-модели Zen без ключа (проверено вживую):** muse-spark-1.3-contributor-free и muse-spark-1.2-contributor-free — ответы через эндпоинт /v1/responses с тулами в Responses-формате; релей автоматически сворачивает их в обычный chat.completion;" \
+            "- добавлена deepseek-v4-flash-free (зарегистрирована в free tier, но провайдер временно отдаёт «Model is unavailable»);" \
+            "- итого 10 демо-моделей Zen без ключа + 5 моделей Pollinations = 15 ключевых «без API» -кандидатов в фильтре «🆓 без ключа»;" \
+            "- «Ox Alpha» (x-preview-f-free) анонимно больше не отдаётся (401) — его роль выполняют Muse Spark; jev-1.13-free — decision-модель (state+questions), не чат, в чат не включена;" \
+            "- релей relay/zen-relay.mjs теперь понимает оба эндпоинта zen (chat + responses) с автоопределением по модели и понятными ошибками (jev)." \
             "" \
-            "**Ранее:** 1.1.3 — живой тест всех моделей каталога (без ключа: все 5 моделей Pollinations; с ключом: 175/198 провайдеров, ложные срабатывания iflowcn/agentrouter закрыты). 1.1.2 — пикер по умолчанию с фильтром «без ключа». 1.1.1 — OpenCode Zen вернулся как реальный провайдер (opencode.ai/zen): один ключ → любые модели, любую модель можно вписать вручную." \
+            "**Ранее:** 1.1.4 — базовые демо-модели Zen (big-pickle, mimo-*, nemotron-*, ling-3.0-flash-fin-free, space-bunny-free) через релей. 1.1.3 — живой тест всех моделей каталога. 1.1.2 — пикер по умолчанию с фильтром «без ключа». 1.1.1 — OpenCode Zen вернулся как реальный провайдер (opencode.ai/zen)." \
             "" \
             "**APK (release-signed):** voicecomic-$TAG.apk")
           gh release create "$TAG" "voicecomic-$TAG.apk" \
             --target "${GITHUB_SHA}" \
-            --title "VoiceComic $VERSION — демо-модели Zen (big-pickle) без ключа через релей" \
+            --title "VoiceComic $VERSION — +2 демо-модели Zen (Muse Spark), 10 Zen + 5 Pollinations без ключа" \
             --notes "$NOTES"
