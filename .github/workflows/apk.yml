@@ -97,15 +97,18 @@ jobs:
             "Сборка в GitHub Actions по тегу $TAG." \
             "" \
             "**Что нового в $VERSION:**" \
-            "- пикер моделей по умолчанию открывается с фильтром «🆓 без ключа» — сразу видно только модели, которым ключ не нужен (Pollinations anonymous: openai / openai-fast / gpt-oss / gpt-oss-20b / ovh-reasoning);" \
-            "- при выборе провайдера с ключом фильтр мягко сбрасывается на «Все» (не пустой список);" \
-            "- примечание: «бесплатные» модели Zen (big-pickle и др.) бесплатны тарифом, но их отдаёт только сам OpenCode (403 «free tier only from within OpenCode») — без ключа они недоступны, с ключом Zen работают." \
+            "- пикер моделей по умолчанию открывается с фильтром «🆓 без ключа» — сразу видно только модели, которым ключ не нужен;" \
+            "- при выборе провайдера с ключом фильтр мягко сбрасывается на «Все»." \
             "" \
-            "**Ранее в 1.1.1:** OpenCode Zen вернулся как реальный провайдер (opencode.ai/zen): один ключ → любые модели, 5 бесплатных в списке, любую модель можно вписать вручную." \
+            "**🧪 Живой тест ВСЕХ моделей каталога (этот релиз):**" \
+            "- **Без ключа — отвечают реально все 5** анонимных моделей Pollinations: openai / openai-fast / gpt-oss / gpt-oss-20b / ovh-reasoning (иногда 429 «queue full» = rate limit одного IP, не поломка);" \
+            "- **С ключом:** 175 из 198 провайдеров подтвердили живой endpoint (401/403 = нужен корректный ключ), включая openrouter, opencode (Zen), openai, anthropic, groq, deepseek, mistral, cerebras, together, perplexity, zhipuai, moonshotai и другие;" \
+            "- **Ложные срабатывания проверки закрыты:** iflowcn и agentrouter возвращают HTTP 200, но с телом-ошибкой (JSON «Invalid apiKey» / WAF-капча) — без ключа они НЕ работают;" \
+            "- **Про free-модели Zen:** big-pickle, qwen3.6-plus-free и др. бесплатны по тарифу, но отдаются только с ключом Zen — без ключа проверено 401/403 (big-pickle: «free tier only from within OpenCode»)." \
             "" \
-            "**APK (release-signed):** voicecomic-$TAG.apk" \
+            "**Ранее в 1.1.1:** OpenCode Zen вернулся как реальный провайдер (opencode.ai/zen): один ключ → любые модели, любую модель можно вписать вручную." \
             "" \
-            "**Проверено:** npm test — ALL PASS; дефолтная вкладка без-ключа показывает только keyless-модели; endpoint zen отвечает (401/403 = реальный шлюз); бесплатные модели без ключей отвечают вживую.")
+            "**APK (release-signed):** voicecomic-$TAG.apk")
           gh release create "$TAG" "voicecomic-$TAG.apk" \
             --target "${GITHUB_SHA}" \
             --title "VoiceComic $VERSION — OpenCode Zen вернулся (реальный шлюз, любые модели)" \
