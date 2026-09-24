@@ -249,6 +249,15 @@ export function openModelPicker({ settings, onSelect } = {}) {
         a.textContent = '🔑 Где взять ключ →';
         head.appendChild(a);
       }
+      if (f.tab === 'opencode') {
+        const a = document.createElement('a');
+        a.className = 'mp-key';
+        a.href = 'https://opencode.ai/zen';
+        a.target = '_blank';
+        a.rel = 'noopener';
+        a.textContent = '📚 Список моделей Zen → (можно вписать любую)';
+        head.appendChild(a);
+      }
     }
 
     listWrap.insertBefore(head, listWrap.firstChild);

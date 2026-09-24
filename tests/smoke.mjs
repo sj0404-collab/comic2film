@@ -110,11 +110,20 @@ ok(provider('minimax').anthropic === true && provider('subconscious').anthropic 
 ok((provider('minimax').endpoint || '').startsWith('https://') && (provider('minimax').endpoint || '').endsWith('/messages'), 'minimax: антропиковский endpoint /messages');
 
 /* Фейковый провайдер Zen AI (api.zen.ai / zen-30b...) не существует — удалён.
- * Автообновляемые opencode zen (opencode / opencode-go) убраны из каталога. */
+ * OpenCode Zen (opencode) вернулся как РЕАЛЬНЫЙ шлюз (opencode.ai/zen) с curated-списком;
+ * автообновляемый блоб его моделей из models.dev и устаревший opencode-go не включаются. */
 ok(!PROVIDERS.zen, 'фейковый провайдер Zen AI удалён');
 ok(!Object.keys(PROVIDERS).some(k => (PROVIDERS[k].endpoint || '').includes('api.zen.ai')), 'в каталоге нет провайдеров с api.zen.ai');
-ok(!Object.keys(PROVIDERS).some(k => /^opencode/i.test(k)), 'автообновляемые opencode zen (opencode/opencode-go) удалены из каталога');
-ok(!Object.keys(PROVIDERS).some(k => (provider(k).endpoint || '').includes('opencode.ai/zen')), 'нет endpoint-ов opencode.ai/zen');
+ok(!!PROVIDERS.opencode, 'OpenCode Zen добавлен как реальный провайдер');
+ok(provider('opencode').endpoint === 'https://opencode.ai/zen/v1/chat/completions', 'opencode: endpoint — реальный шлюз opencode.ai/zen');
+ok(providerKeyUrl('opencode').includes('opencode.ai'), 'opencode: ссылка на ключ (opencode.ai/zen)');
+ok(!PROVIDERS['opencode-go'], 'opencode-go (устаревший) не добавлен в каталог');
+ok(!MODELS_DEV.opencode, 'список моделей Zen не раздут автообновляемой копией models.dev (curated)');
+ok(Object.keys(provider('opencode').models).length >= 10, 'opencode: curated-список моделей (>=10)');
+ok(provider('opencode').models.some(m => m.free), 'opencode: есть бесплатные модели (qwen3.6-plus-free и др.)');
+ok(isFreeModel('opencode', 'qwen3.6-plus-free') === true, 'opencode: qwen3.6-plus-free помечена бесплатной');
+ok(isFreeModel('opencode', 'gpt-5.4-pro') === false, 'opencode: gpt-5.4-pro платная');
+ok(isOrchestrator('opencode') === true, 'opencode помечен как оркестратор (один ключ → любые модели)');
 ok(PROVIDERS.custom.name.includes('Свой') && !PROVIDERS.custom.name.includes('M-PM-'), 'custom-провайдер: имя без mojibake');
 
 /* Где взять ключ: у всех curated-провайдеров с ключом есть ссылка на реальный сайт. */

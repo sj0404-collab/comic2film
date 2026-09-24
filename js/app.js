@@ -1046,7 +1046,7 @@ function syncProviderUi() {
   $('f-opt-key').hidden = !(p.key === true);
   $('f-opt-aiurl').hidden = !custom;
   $('f-opt-aimodel').hidden = false;
-  $('opt-aimodel-custom').hidden = !(custom || keyless);
+  $('opt-aimodel-custom').hidden = !(custom || keyless || settings.ai === 'opencode');
   $('f-opt-proxy').hidden = settings.voiceBackend !== 'edge-proxy';
 }
 

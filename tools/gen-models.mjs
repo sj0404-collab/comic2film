@@ -19,7 +19,8 @@ const ANTHROPIC = '@ai-sdk/anthropic';
 /* Провайдеры, где даже при наличии api нужна подпись/особые заголовки — мимо. */
 const SKIP_NPM = /azure|amazon-bedrock|cohere|google-vertex|sap|watsonx|gitlab|cloudflare|-gateway|@ai-sdk\/gateway|vercel|merge-gateway/i;
 /* Автообновляемые «витринные» провайдеры opencode (zen): список моделей
- * меняется без нашего контроля, с сайта их не получить — выкидываем. */
+ * меняется без нашего контроля и с сайта не снапшотится — в models.dev.js их
+ * не кладём: OpenCode Zen живёт отдельной curated-записью в js/ai.js. */
 const SKIP_ID = /^opencode/i;
 
 const mode = process.argv[2] || 'fetch';
