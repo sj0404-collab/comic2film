@@ -103,7 +103,10 @@ export function openModelPicker({ settings, onSelect } = {}) {
   $body.replaceChildren();
   $('modal').classList.remove('hidden');
 
-  const f = { cat: 'all', tab: 'all', quality: 'curated', q: '' };
+  /* По умолчанию — только модели, которым не нужен ключ (Pollinations anonymous).
+   * big-pickle и прочие free-модели Zen вместе с ним требуют регистрации ключа
+   * (403 «free tier only from within OpenCode»), поэтому в «без ключа» не попадают. */
+  const f = { cat: 'nokey', tab: 'all', quality: 'curated', q: '' };
   let visibleKeys = [];
 
   const wrap = document.createElement('div');
@@ -185,6 +188,7 @@ export function openModelPicker({ settings, onSelect } = {}) {
             f.quality = 'all';
             qualSel.value = 'all';
           }
+          if (f.cat === 'nokey' && provider(mt.pid).key === true) { f.cat = 'all'; fillChips(); }
           fillTabs();
           render();
         });
