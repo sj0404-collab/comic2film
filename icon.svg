@@ -6,13 +6,31 @@
     </linearGradient>
   </defs>
   <rect width="512" height="512" rx="112" fill="#0f1420"/>
-  <path d="M96 128c-18 0-32 14-32 32
-           v192c0 18 14 32 32 32
-           h320c18 0 32-14 32-32
-           V160c0-18-14-32-32-32
-           H96zm16 48
-           h288c6 0 10 4 10 10
-           v84H102v-84c0-6 4-10 10-10z"
-    fill="url(#g)"/>
-  <text x="256" y="300" text-anchor="middle" font-family="sans-serif" font-size="150" font-weight="bold" fill="#e8edf7">▶</text>
+  <!-- киноплёнка по краям -->
+  <rect x="84" y="120" width="30" height="272" rx="15" fill="url(#g)" opacity=".95"/>
+  <rect x="398" y="120" width="30" height="272" rx="15" fill="url(#g)" opacity=".95"/>
+  <g fill="#0f1420">
+    <rect x="92" y="134" width="14" height="20" rx="4"/>
+    <rect x="92" y="168" width="14" height="20" rx="4"/>
+    <rect x="92" y="202" width="14" height="20" rx="4"/>
+    <rect x="92" y="236" width="14" height="20" rx="4"/>
+    <rect x="92" y="270" width="14" height="20" rx="4"/>
+    <rect x="92" y="304" width="14" height="20" rx="4"/>
+    <rect x="92" y="338" width="14" height="20" rx="4"/>
+    <rect x="406" y="134" width="14" height="20" rx="4"/>
+    <rect x="406" y="168" width="14" height="20" rx="4"/>
+    <rect x="406" y="202" width="14" height="20" rx="4"/>
+    <rect x="406" y="236" width="14" height="20" rx="4"/>
+    <rect x="406" y="270" width="14" height="20" rx="4"/>
+    <rect x="406" y="304" width="14" height="20" rx="4"/>
+    <rect x="406" y="338" width="14" height="20" rx="4"/>
+  </g>
+  <!-- пузырь речи -->
+  <path d="M228 300 l-30 58 90 -53 z" fill="url(#g)"/>
+  <rect x="132" y="108" width="248" height="216" rx="54" fill="url(#g)"/>
+  <circle cx="188" cy="124" r="28" fill="#0f1420" opacity=".18"/>
+  <circle cx="424" cy="380" r="40" fill="#0f1420" opacity=".12"/>
+  <!-- кнопка play -->
+  <path d="M232 190 l76 34 -76 36 z" fill="#0f1420" opacity=".9"/>
+  <path d="M226 192 l0 68 66 -34 z" fill="#e8edf7"/>
 </svg>

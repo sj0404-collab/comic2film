@@ -18,6 +18,9 @@ const OUT = fileURLToPath(new URL('../js/models.dev.js', import.meta.url));
 const ANTHROPIC = '@ai-sdk/anthropic';
 /* Провайдеры, где даже при наличии api нужна подпись/особые заголовки — мимо. */
 const SKIP_NPM = /azure|amazon-bedrock|cohere|google-vertex|sap|watsonx|gitlab|cloudflare|-gateway|@ai-sdk\/gateway|vercel|merge-gateway/i;
+/* Автообновляемые «витринные» провайдеры opencode (zen): список моделей
+ * меняется без нашего контроля, с сайта их не получить — выкидываем. */
+const SKIP_ID = /^opencode/i;
 
 const mode = process.argv[2] || 'fetch';
 let data;
@@ -35,6 +38,7 @@ let nprov = 0, nmod = 0;
 
 for (const id of Object.keys(data)) {
   const p = data[id];
+  if (SKIP_ID.test(id)) continue;
   const api = (p.api || '').replace(/\/+$/, '');
   const npm = p.npm || '';
   let fmt = 'openai';

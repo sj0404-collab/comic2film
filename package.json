@@ -1,7 +1,7 @@
 {
   "name": "voicecomic",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "VoiceComic — мангу/комиксы в озвученное видео прямо в браузере (OCR + Edge-TTS + ffmpeg.wasm)",
   "type": "module",
   "scripts": {

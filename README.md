@@ -85,15 +85,16 @@ cd android && ./gradlew assembleDebug
 
 ## API и ключи
 
-Встроен полный каталог провайдеров и моделей opencode (исходник — models.dev, см. `js/models.dev.js`): 200+ провайдеров OpenAI-/Anthropic-совместимых API, у каждой модели отмечается статус:
+Встроен полный каталог провайдеров и моделей (Исходник — models.dev, см. `js/models.dev.js`; автообновляемые «онлайн»-провайдеры opencode zen исключены): 200+ провайдеров OpenAI-/Anthropic-совместимых API с реальных сайтов. Пикер моделей — кнопки-вкладки по провайдерам, внутри каждой вкладки дерево моделей и фильтры:
 
-- **🆓 без ключа**: Pollinations — единственный провайдер, работающий совсем без ключа (`text.pollinations.ai/openai`). Список живых бесплатных моделей (tier=anonymous, сейчас движок GPT-OSS 20B и алиасы) обновляется кнопкой «🔄 обновить список».
-- **🔑 с ключом**: OpenRouter (есть `:free`-модели), OpenAI, Anthropic Claude, Google Gemini, Groq (free tier), DeepSeek, Mistral, Together AI, xAI Grok, Perplexity, Cerebras (free tier) + 180+ совместимых провайдеров из models.dev — ключ вставляется в «Ключ API».
+- **🆓 без ключа**: Pollinations — единственный провайдер, работающий совсем без ключа (`text.pollinations.ai/openai`). Список живых бесплатных моделей (tier=anonymous) обновляется кнопкой «🔄 Модели без ключа».
+- **🔑 с ключом**: OpenRouter (оркестратор: один ключ → модели многих команд), OpenAI, Anthropic Claude, Google Gemini, Groq (free tier), DeepSeek, Mistral, Together AI, xAI Grok, Perplexity, Cerebras (free tier) + 190+ совместимых провайдеров. Рядом с таким провайдером — ссылка «где взять ключ» (официальный сайт).
+- **Фильтры дерева**: 🆓 без ключа · бесплатно · платно · 👁 vision · 🧠 умные · ⚡ быстрые · 🎛 оркестратор + поиск. Каждую модель можно проверить «вживую» (⚡ проверить, отвечает ли реально).
+- **👁 Vision** — читают картинки, используются как OCR вместо Tesseract. **Tesseract** — полностью локально (wasm с CDN при первом OCR).
 - **Свой OpenAI-совместимый** — любой endpoint (Ollama, LM Studio, VPN-прокси) + ключ.
 - **Edge-TTS** — работает напрямую из браузера через WSS (Microsoft публичный эндпоинт), прокси опционально.
-- **Tesseract** — полностью локально (wasm загружается с CDN при первом OCR).
 
-Каталог генерируется скриптом `tools/gen-models.mjs` из https://models.dev/api.json (те же данные, что использует npm-пакет opencode).
+Каталог генерируется скриптом `tools/gen-models.mjs` из https://models.dev/api.json (те же данные, что использует npm-пакет opencode), без opencode-zen и локальных mini-провайдеров.
 
 ## Лицензия
 

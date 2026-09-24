@@ -85,7 +85,7 @@ ok(estimatePauseMs('Привет!?') > estimatePauseMs('Привет'), 'estimat
 
 /* Каталог провайдеров и моделей */
 const ai = await import('../js/ai.js');
-const { PROVIDERS, provider, isFreeModel, MODELS_DEV, providerHasVision } = ai;
+const { PROVIDERS, provider, isFreeModel, MODELS_DEV, providerHasVision, isSmartModel, isOrchestrator, providerKeyUrl } = ai;
 ok(Object.keys(PROVIDERS).length >= 10, 'каталог: >=10 провайдеров');
 ok(Object.keys(MODELS_DEV).length >= 150, 'models.dev: >=150 провайдеров из opencode npm');
 ok(providerHasVision('pollinations'), 'pollinations помечен как vision');
@@ -110,11 +110,37 @@ ok(provider('minimax').anthropic === true && provider('subconscious').anthropic 
 ok((provider('minimax').endpoint || '').startsWith('https://') && (provider('minimax').endpoint || '').endsWith('/messages'), 'minimax: антропиковский endpoint /messages');
 
 /* Фейковый провайдер Zen AI (api.zen.ai / zen-30b...) не существует — удалён.
- * Проверяем именно фейк, а не любые провайдеры со «zen» в имени (в каталоге
- * opencode/models.dev есть реальные Zenifra и ZenMux). */
+ * Автообновляемые opencode zen (opencode / opencode-go) убраны из каталога. */
 ok(!PROVIDERS.zen, 'фейковый провайдер Zen AI удалён');
 ok(!Object.keys(PROVIDERS).some(k => (PROVIDERS[k].endpoint || '').includes('api.zen.ai')), 'в каталоге нет провайдеров с api.zen.ai');
+ok(!Object.keys(PROVIDERS).some(k => /^opencode/i.test(k)), 'автообновляемые opencode zen (opencode/opencode-go) удалены из каталога');
+ok(!Object.keys(PROVIDERS).some(k => (provider(k).endpoint || '').includes('opencode.ai/zen')), 'нет endpoint-ов opencode.ai/zen');
 ok(PROVIDERS.custom.name.includes('Свой') && !PROVIDERS.custom.name.includes('M-PM-'), 'custom-провайдер: имя без mojibake');
+
+/* Где взять ключ: у всех curated-провайдеров с ключом есть ссылка на реальный сайт. */
+ok(isOrchestrator('openrouter') === true, 'openrouter помечен как оркестратор (один ключ → многие модели)');
+ok(isOrchestrator('openai') === false && isOrchestrator('pollinations') === false, 'openai/pollinations — не оркестраторы');
+ok(providerKeyUrl('openai').startsWith('https://'), 'openai: ссылка на ключ = реальный сайт');
+ok(providerKeyUrl('gemini').includes('aistudio.google.com'), 'gemini: ссылка на ключ AI Studio');
+ok(providerKeyUrl('openrouter').includes('openrouter.ai'), 'openrouter: ссылка на ключ');
+ok(providerKeyUrl('pollinations') === '', 'pollinations: без ключа → ссылки нет');
+ok(ai.PROVIDER_KEY_URL && Object.keys(ai.PROVIDER_KEY_URL).length >= 10, 'PROVIDER_KEY_URL определён с непустым набором');
+ok(Object.keys(PROVIDERS).every((id) => {
+  const p = provider(id);
+  if (p.key !== true) return true;
+  return providerKeyUrl(id).startsWith('https://') || providerKeyUrl(id) === '';
+}), 'у всех ключевых провайдеров есть ссылка на ключ (или сайт провайдера)');
+
+/* Умные/быстрые: известно поведение для типовых имён. */
+const mtSmart = ai.modelMeta('openai', 'gpt-5.2');
+const mtFast = ai.modelMeta('openai', 'gpt-4o-mini');
+const mtFlash = ai.modelMeta('gemini', 'gemini-2.0-flash');
+const mtPro = ai.modelMeta('gemini', 'gemini-2.5-pro');
+const mtLlama = ai.modelMeta('cerebras', 'llama-3.3-70b');
+ok(typeof mtSmart.smart === 'boolean', 'modelMeta.smart — булев флаг');
+ok(mtFast.smart === false && mtFlash.smart === false, 'mini/flash классифицируются как быстрые (глупые)');
+ok(mtPro.smart === true && mtLlama.smart === true, 'pro/70B классифицируются как умные');
+ok(typeof isSmartModel('pollinations', 'gpt-oss-20b') === 'boolean', 'isSmartModel работает и на без-ключ моделях');
 
 /* передискретизация: длина и значения при 24k -> 44.1k и обратно */
 const ramp = Float32Array.from({ length: 48000 }, (_, i) => Math.sin(i / 48000 * Math.PI * 4));

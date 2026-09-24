@@ -23,7 +23,7 @@ export const CURATED_PROVIDERS = {
     ],
   },
   openrouter: {
-    name: 'OpenRouter · free/paid', key: true, openai: true, vision: true,
+    name: 'OpenRouter · free/paid', key: true, openai: true, vision: true, orchestrator: true,
     endpoint: 'https://openrouter.ai/api/v1/chat/completions',
     headers: { 'HTTP-Referer': 'https://github.com/sj0404-collab/comic2film', 'X-Title': 'VoiceComic' },
     models: [
@@ -179,6 +179,40 @@ function catalog() {
 export const PROVIDERS = catalog();
 export { MODELS_DEV } from './models.dev.js';
 
+/* Где брать API-ключ у официальных провайдеров (их реальные сайты). */
+export const PROVIDER_KEY_URL = {
+  openai: 'https://platform.openai.com/api-keys',
+  anthropic: 'https://console.anthropic.com/settings/keys',
+  gemini: 'https://aistudio.google.com/app/apikey',
+  openrouter: 'https://openrouter.ai/settings/keys',
+  groq: 'https://console.groq.com/keys',
+  deepseek: 'https://platform.deepseek.com/api_keys',
+  mistral: 'https://console.mistral.ai/api-keys',
+  together: 'https://api.together.ai/settings/api-keys',
+  xai: 'https://console.x.ai/',
+  perplexity: 'https://www.perplexity.ai/settings/api',
+  cerebras: 'https://console.cerebras.ai/api-keys',
+  custom: '',
+  local: '',
+};
+
+/* Ссылка на страницу, где взять ключ. Для каталога models.dev — сайт
+ * провайдера из его endpoint (реальный домен). */
+export function providerKeyUrl(pid) {
+  const p = provider(pid);
+  if (p.key !== true) return '';
+  if (pid in PROVIDER_KEY_URL) return PROVIDER_KEY_URL[pid];
+  try {
+    return new URL(p.endpoint).origin + '/';
+  } catch (e) {
+    return '';
+  }
+}
+
+export function isOrchestrator(pid) {
+  return provider(pid).orchestrator === true;
+}
+
 export function provider(id) { return PROVIDERS[id] || PROVIDERS.custom; }
 
 export function isFreeModel(pid, mid) {
@@ -197,6 +231,23 @@ export function modelKind(pid, mid) {
 }
 
 /* Метаданные модели для пикера/фильтров. */
+const SMART_KEYS = /reason|rational|thinking|thinker|opus|sonnet|pro$|ultra|max$|flash-thinking|r1|r2|qwq|\bo1\b|\bo2\b|\bo3\b|\bo4\b|grok-3|grok-4|deepseek-v4|deepseek-r1|deepseek-chat|glm-5|kimi-k3|qwen3-(235|430|max)|premium|200b|230b|235b|250b|300b|397b|400b|405b|430b|500b|545b|600b|671b|750b|1\.5-trillion|trillion/i;
+const DUMB_KEYS = /\bmini\b|\blite\b|\blight\b|\bsmall\b|\btiny\b|\bfast\b|\bflash\b|\bhaiku\b|\binstant\b|\bnano\b|\bmicro\b|\bpico\b|\bsprint\b|\bcheap\b|\bquick\b|\bcompact\b|\bpixel\b|\b0\.\db\b|\b1\.5b\b|\b2b\b|\b3b\b|\b4b\b|\b7b\b|\b8b\b|\b9b\b|\b10b\b|\b12b\b|\b14b\b|\b18b\b|\b24b\b|\b27b\b|\b32b\b|\b33b\b|\b34b\b|\b35b\b|\b40b-a3b\b|\b56b-a3b\b|\b76b-a3b\b|\bgpt-oss-20b\b/i;
+
+/* «Умные или глупые» по объёму/классу: числительные «70B» и выше считаем
+ * умными, компактные имена (mini/flash/haiku/nano/…b) — быстрыми/глупыми. */
+export function isSmartModel(pid, mid) {
+  const p = provider(pid);
+  const m = (p.models || []).find((x) => x.id === mid) || {};
+  const s = (((m.label || '') + ' ' + mid) || '').toLowerCase();
+  const numB = s.match(/(\d+(?:\.\d+)?)\s*b\b/);
+  if (numB) return parseFloat(numB[1]) >= 32;
+  if (DUMB_KEYS.test(s)) return false;
+  if (SMART_KEYS.test(s)) return true;
+  return true; // неопределённые каталоговые — считаем умными (оптимизм)
+}
+
+/* Метаданные модели для пикера/фильтров. */
 export function modelMeta(pid, mid) {
   const p = provider(pid);
   const m = (p.models || []).find((x) => x.id === mid) || {};
@@ -211,6 +262,8 @@ export function modelMeta(pid, mid) {
     vision: p.vision === true,
     curated: p.curated === true,
     requiresKey: p.key === true,
+    smart: isSmartModel(pid, mid),
+    orchestrator: p.orchestrator === true,
   };
 }
 
