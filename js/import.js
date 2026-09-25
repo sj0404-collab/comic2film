@@ -3,18 +3,29 @@
 import { byNumName, isImageFile, extOf, IMAGE_EXT, loadScript, numKey } from './util.js';
 
 const PDFJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+const PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+const JSZIP_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
 const UNRAR_BASE = 'https://cdn.jsdelivr.net/npm/node-unrar-js@2.0.2/esm/js/';
 
 let _unrarPromise = null;
 
 function ensurePdfjs() {
-  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  const configure = (lib) => {
+    try { lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER; } catch (e) { /* старые версии */ }
+    return lib;
+  };
+  if (window.pdfjsLib) return Promise.resolve(configure(window.pdfjsLib));
   return loadScript(PDFJS_CDN).then(() => {
     if (!window.pdfjsLib) throw new Error('Не удалось загрузить PDF-движок');
-    window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    return window.pdfjsLib;
+    return configure(window.pdfjsLib);
   });
+}
+
+async function ensureJsZip() {
+  if (window.JSZip) return window.JSZip;
+  await loadScript(JSZIP_CDN);
+  if (!window.JSZip) throw new Error('Не удалось загрузить JSZip (нет сети?)');
+  return window.JSZip;
 }
 
 async function ensureUnrar() {
@@ -41,8 +52,7 @@ function toFile(blob, name) {
 
 /* --- Архивы ZIP/CBZ --- */
 async function extractZip(file, { onProgress }) {
-  const JSZipLib = window.JSZip;
-  if (!JSZipLib) throw new Error('Не загружен JSZip');
+  const JSZipLib = await ensureJsZip();
   const zip = await JSZipLib.loadAsync(await file.arrayBuffer());
   const names = Object.keys(zip.files)
     .filter(n => !zip.files[n].dir && isImageFile({ name: n }))

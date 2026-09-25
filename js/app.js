@@ -1,7 +1,7 @@
 /* Главный модуль: состояние проекта, табы, импорт, OCR, роли, TTS, рендер. */
 
 import {
-  toast, uuid, download, fmtDur, loadImage,
+  toast, uuid, download, fmtDur, loadImage, loadScript, loadCss,
 } from './util.js';
 import { idbSet, idbGet, idbDel, KEY_PROJECT, KEY_SETTINGS } from './store.js';
 import { analyzeRoles, translateLines, FREE_MODELS, refreshFreeModels, PROVIDERS, provider, providerHasVision, isFreeModel, modelMeta } from './ai.js';
@@ -27,6 +27,12 @@ const ROLE_COLORS = ['#5b8cff', '#ff6b7a', '#3ecf9a', '#ffb454', '#c084fc', '#38
 const EMO_GENDER = { male: '🧔', female: '👩', other: '🤖' };
 const TTS_STYLES = ['', 'cheerful', 'excited', 'angry', 'sad', 'whisper', 'shouting', 'terrified', 'unfriendly', 'gentle'];
 const PROJECT_NAME = 'VoiceComic';
+const XTERM_CSS = 'https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css';
+const XTERM_JS = [
+  'https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js',
+  'https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js',
+  'https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js',
+];
 
 /* ================================================================
  * Состояние
@@ -1279,10 +1285,30 @@ async function wire() {
       $('btnInstall').classList.add('hidden');
     });
   }
-  if ('serviceWorker' in navigator) {
-    try { navigator.serviceWorker.register('sw.js'); } catch (e) {}
-  }
+  setupServiceWorker();
   $('pwa-status').textContent = deferredPrompt ? 'Приложение можно установить кнопкой ⬇ вверху.' : 'Работает в браузере / как PWA. Установка предлагается после второго посещения.';
+}
+
+/* Service worker: автообновление страницы в браузере и в APK.
+ * Новая версия SW забирает контроль (skipWaiting/claim) и страница
+ * перезагружается один раз, чтобы не показывать устаревший кэш. */
+function setupServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  let hadController = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController) { hadController = true; return; } // первая установка SW
+    if (reloading) return;
+    reloading = true;
+    location.reload();
+  });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+    .then((reg) => {
+      const check = () => { try { reg.update(); } catch (e) { /* нет сети */ } };
+      setInterval(check, 60 * 60 * 1000);
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+    })
+    .catch(() => {});
 }
 
 /* Backend / Terminal */
@@ -1321,13 +1347,20 @@ async function wire() {
     if (!settings.backendUrl || !settings.backendToken) {
       toast('Задайте URL и токен бэкенда', 'err'); return;
     }
+
+    // xterm подгружается лениво — блокирующие теги CDN в index.html запрещены
+    try {
+      await loadCss(XTERM_CSS);
+      await Promise.all(XTERM_JS.map((u) => loadScript(u)));
+    } catch (e) { /* ниже выдадим понятную ошибку */ }
+    if (typeof Terminal === 'undefined') { toast('xterm.js не загружен (нет сети?)', 'err'); return; }
+
     const modal = $('term-modal');
     const container = $('term-container');
     container.innerHTML = '';
     modal.classList.remove('hidden');
 
     // init xterm
-    if (typeof Terminal === 'undefined') { toast('xterm.js не загружен', 'err'); return; }
     term = new Terminal({
       cursorBlink: true,
       fontSize: 13,

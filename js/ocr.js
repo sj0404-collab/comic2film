@@ -1,14 +1,19 @@
 /* OCR: локальный Tesseract (точные боксы слов) или vision-ИИ.
  * Возвращает «пузыри» реплик с координатами. */
 
-import { clusterBubbleWords, sortBubblesReadingOrder, loadImage } from './util.js';
+import { clusterBubbleWords, sortBubblesReadingOrder, loadImage, loadScript } from './util.js';
 import { visionExtractLines } from './ai.js';
 import { detectBubbles } from './yolo.js';
+
+const TESSERACT_CDN = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
 
 let _worker = null;
 let _workerLang = null;
 
 async function ensureTesseractWorker(lang, logger) {
+  if (!window.Tesseract) {
+    await loadScript(TESSERACT_CDN).catch(() => {});
+  }
   if (!window.Tesseract) throw new Error('Tesseract не загружен (нет сети?)');
   const langs = Array.isArray(lang) ? lang.join('+') : lang;
   if (_worker && _workerLang === langs) return _worker;

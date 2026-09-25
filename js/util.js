@@ -337,13 +337,34 @@ export function download(blob, name) {
   setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 4000);
 }
 
+const _loaderPromises = new Map();
+
 export function loadScript(src) {
-  return new Promise((res, rej) => {
-    if (document.querySelector(`script[src="${src}"]`)) return res();
+  if (_loaderPromises.has(src)) return _loaderPromises.get(src);
+  const p = new Promise((res, rej) => {
     const s = document.createElement('script');
-    s.src = src; s.onload = () => res(); s.onerror = () => rej(new Error('Не удалось загрузить: ' + src));
+    s.src = src;
+    s.async = true;
+    s.onload = () => res();
+    s.onerror = () => { _loaderPromises.delete(src); rej(new Error('Не удалось загрузить: ' + src)); };
     document.head.appendChild(s);
   });
+  _loaderPromises.set(src, p);
+  return p;
+}
+
+export function loadCss(href) {
+  if (_loaderPromises.has(href)) return _loaderPromises.get(href);
+  const p = new Promise((res, rej) => {
+    const l = document.createElement('link');
+    l.rel = 'stylesheet';
+    l.href = href;
+    l.onload = () => res();
+    l.onerror = () => { _loaderPromises.delete(href); rej(new Error('Не удалось загрузить: ' + href)); };
+    document.head.appendChild(l);
+  });
+  _loaderPromises.set(href, p);
+  return p;
 }
 
 export function toast(msg, kind = '') {

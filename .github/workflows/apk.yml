@@ -97,16 +97,15 @@ jobs:
             "Сборка в GitHub Actions по тегу $TAG." \
             "" \
             "**Что нового в $VERSION:**" \
-            "- **+2 новые демо-модели Zen без ключа (проверено вживую):** muse-spark-1.3-contributor-free и muse-spark-1.2-contributor-free — ответы через эндпоинт /v1/responses с тулами в Responses-формате; релей автоматически сворачивает их в обычный chat.completion;" \
-            "- добавлена deepseek-v4-flash-free (зарегистрирована в free tier, но провайдер временно отдаёт «Model is unavailable»);" \
-            "- итого 10 демо-моделей Zen без ключа + 5 моделей Pollinations = 15 ключевых «без API» -кандидатов в фильтре «🆓 без ключа»;" \
-            "- «Ox Alpha» (x-preview-f-free) анонимно больше не отдаётся (401) — его роль выполняют Muse Spark; jev-1.13-free — decision-модель (state+questions), не чат, в чат не включена;" \
-            "- релей relay/zen-relay.mjs теперь понимает оба эндпоинта zen (chat + responses) с автоопределением по модели и понятными ошибками (jev)." \
+            "- **Исправлено: в APK не нажималось ничего** — блокирующие CDN-теги (tesseract/xterm/jszip/pdf) убраны из index.html, библиотеки подключаются лениво (js/util.js: loadScript/loadCss, js/import.js: ensureJsZip, js/ocr.js, js/app.js: терминал); теперь приложение стартует даже без интернета и вешает обработчики;" \
+            "- **Исправлено: страница не обновлялась после обновления APK** — service worker был cache-first с вечным voicecomic-v4; теперь sw.js отдаёт сеть первым (кэш только офлайн-фолбэк, voicecomic-v5), при установке новой версии активация удаляет старые кэши и перезагружает открытые окна (без await внутри waitUntil — иначе SW зависал в activating);" \
+            "- app.js: регистрация SW с updateViaCache:'none', разовый reload на controllerchange, проверка обновлений раз в час и при возврате вкладки;" \
+            "- проверено в эмуляторе: офлайн-старт и реальные тапы работают, апгрейд со старой версии сам подхватывается и показывает свежий контент на холодном старте." \
             "" \
-            "**Ранее:** 1.1.4 — базовые демо-модели Zen (big-pickle, mimo-*, nemotron-*, ling-3.0-flash-fin-free, space-bunny-free) через релей. 1.1.3 — живой тест всех моделей каталога. 1.1.2 — пикер по умолчанию с фильтром «без ключа». 1.1.1 — OpenCode Zen вернулся как реальный провайдер (opencode.ai/zen)." \
+            "**Ранее:** 1.1.5 — +2 демо-модели Zen (Muse Spark 1.2/1.3 без ключа). 1.1.4 — базовые демо-модели Zen через релей. 1.1.3 — живой тест всех моделей каталога. 1.1.2 — пикер по умолчанию с фильтром «без ключа». 1.1.1 — OpenCode Zen вернулся как реальный провайдер." \
             "" \
             "**APK (release-signed):** voicecomic-$TAG.apk")
           gh release create "$TAG" "voicecomic-$TAG.apk" \
             --target "${GITHUB_SHA}" \
-            --title "VoiceComic $VERSION — +2 демо-модели Zen (Muse Spark), 10 Zen + 5 Pollinations без ключа" \
+            --title "VoiceComic $VERSION — APK снова всё нажимается, страница обновляется после апдейта" \
             --notes "$NOTES"
