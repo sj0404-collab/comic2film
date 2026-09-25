@@ -6,6 +6,8 @@ import { openModelPicker } from './modelsui.js';
 
 const LS_CURRENT = 'chat:current';
 const MAX_COPY = 12;
+const MAX_ATTACH_BYTES = 400 * 1024;   // текст, который влезет в контекст
+const MAX_TOTAL_CHARS = 24000;        // общий лимит на текст из вложений
 
 const $ = (id) => document.getElementById(id);
 let sessions = [];
@@ -16,7 +18,7 @@ let asking = false;
 
 export async function initChat() {
   sessions = await chatGetSessions();
-  currentId = (idbGet && (await idbGet(LS_CURRENT))) || null;
+  currentId = (await idbGet(LS_CURRENT)) || null;
   if (!currentId || !sessions.find(s => s.id === currentId)) {
     currentId = sessions[0] ? sessions[0].id : null;
   }
@@ -93,8 +95,8 @@ function renderMessages() {
     let h = '<span class="who">' + (m.role === 'user' ? 'Вы' : m.role === 'err' ? 'Ошибка' : 'ИИ') + '</span>';
     if (m.files && m.files.length && m.role === 'user') {
       for (const f of m.files) {
-        if (f.dataURL || f.objectUrl) {
-          h += '<img class="att" src="' + (f.dataURL || f.objectUrl) + '" alt="…">';
+        if (f.dataURL) {
+          h += '<img class="att" src="' + f.dataURL + '" alt="…">';
         } else {
           h += '<span class="attfile">📎 ' + escapeHtml(f.name) + ' · ' + fmtSize(f.size) + '</span>';
         }
@@ -141,18 +143,42 @@ async function ask() {
     void sys;
     const files = userMsg.files || [];
     const images = files.filter(f => f.dataURL);
+
+    // Текстовые вложения раньше показывались в чате, но модели НЕ уходили:
+    // системный промпт обещал «текстовые файлы прочитывай», а приходил
+    // только текст сообщения. Теперь содержимое читается и прикладывается.
+    const texts = [];
+    let skipped = 0;
+    for (const f of files) {
+      if (f.dataURL) continue;
+      if (!f.text) {
+        const t = await readAttachmentText(f);
+        if (t) f.text = t; else { skipped++; continue; }
+      }
+      texts.push(`--- файл «${f.name}» ---\n${f.text}`);
+    }
+    const attachBlock = texts.length
+      ? '\n\n[Содержимое приложенных файлов]\n' + texts.join('\n\n').slice(0, MAX_TOTAL_CHARS)
+      : '';
+
+    const turn = (m) => ({ role: m.role, content: m.content });
+    const userTurn = { role: 'user', content: (text || '(без текста)') + attachBlock };
+    const hist = history.filter(m => m !== userMsg).map(turn);
     let answer;
     if (images.length) {
       answer = await chatWithImage(chatSettings, [
         { role: 'system', content: systemPrompt },
-        ...history.map(m => ({ role: m.role, content: m.content })),
+        ...hist,
+        userTurn,
       ], images[0].dataURL);
     } else {
       answer = await chat(chatSettings, [
         { role: 'system', content: systemPrompt },
-        ...history.map(m => ({ role: m.role, content: m.content })),
+        ...hist,
+        userTurn,
       ]);
     }
+    if (skipped) console.warn('не удалось прочитать вложений: ' + skipped);
     messages = messages.filter(m => m !== typing);
     messages.push({ role: 'ai', content: String(answer), ts: Date.now() });
     const title = (text || (files[0] && files[0].name) || 'Сессия').trim().slice(0, 40);
@@ -193,6 +219,21 @@ function renderAttachments() {
 
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function fmtSize(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + ' МБ' : n > 1024 ? Math.round(n / 1024) + ' КБ' : n + ' Б'; }
+
+/* Прочитать текстовое вложение, чтобы отправить его модели.
+ * Всё, что не текст (картинки, аудио, бинарники), отсекается по типу/размеру. */
+const TEXTY = /^(text\/|application\/(json|xml|javascript|x-yaml|yaml|toml|sql|graphql))/;
+async function readAttachmentText(f) {
+  try {
+    if (typeof f.type === 'string' && f.type && !TEXTY.test(f.type)) return '';
+    if (!f.file || f.size > MAX_ATTACH_BYTES) return '';
+    const t = await f.file.text();
+    if (!t || /[\x00-\x08\x0e-\x1f]/.test(t.slice(0, 512))) return ''; // бинарник без MIME
+    return t.slice(0, MAX_ATTACH_BYTES);
+  } catch (e) {
+    return '';
+  }
+}
 
 function wireChat() {
   const input = $('chat-input');

@@ -11,10 +11,13 @@ VoiceComic Backend — FastAPI + PTY terminal + GitHub token auth.
 import os
 import asyncio
 import json
+import re
 import secrets
+import shutil
 import signal
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -36,7 +39,8 @@ TMP_DIR = WORKSPACE_ROOT / "tmp"
 TMP_DIR.mkdir(exist_ok=True)
 
 GITHUB_API = "https://api.github.com"
-TOKEN_CACHE: dict[str, dict] = {}  # token -> {user, expires}
+TOKEN_TTL = 300  # 5 минут, как и обещает докстринг validate_token
+TOKEN_CACHE: dict[str, tuple[float, dict]] = {}  # token -> (expires_at, user)
 
 app = FastAPI(title="VoiceComic Backend", version="0.5.0")
 
@@ -50,9 +54,17 @@ app.add_middleware(
 
 # ─── Auth ───
 async def validate_token(token: str) -> dict:
-    """Валидирует GitHub PAT через /user, кэширует на 5 мин."""
-    if token in TOKEN_CACHE:
-        return TOKEN_CACHE[token]
+    """Валидирует GitHub PAT через /user, кэширует на TOKEN_TTL секунд.
+
+    Раньше запись в кэш была без срока: отозванный токен оставался рабочим
+    до перезапуска процесса, а словарь рос без границ.
+    """
+    now = time.time()
+    hit = TOKEN_CACHE.get(token)
+    if hit and hit[0] > now:
+        return hit[1]
+    if hit:  # протухшая запись — не копим мусор
+        TOKEN_CACHE.pop(token, None)
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.get(f"{GITHUB_API}/user",
                              headers={"Authorization": f"Bearer {token}",
@@ -60,7 +72,7 @@ async def validate_token(token: str) -> dict:
         if r.status_code != 200:
             raise HTTPException(401, f"GitHub auth failed: {r.status_code}")
         user = r.json()
-    TOKEN_CACHE[token] = user
+    TOKEN_CACHE[token] = (now + TOKEN_TTL, user)
     return user
 
 async def get_user(authorization: Optional[str] = Header(default=None)) -> dict:
@@ -85,11 +97,28 @@ class FileItem(BaseModel):
 
 # ─── Helpers ───
 def resolve_path(user_path: str) -> Path:
-    """Резолвит путь внутри WORKSPACE_ROOT, запрещает вылезать наружу."""
-    p = (WORKSPACE_ROOT / user_path.lstrip("/")).resolve()
-    if not str(p).startswith(str(WORKSPACE_ROOT)):
+    """Ресолвит путь внутри WORKSPACE_ROOT, запрещает вылезать наружу.
+
+    Проверка через str.startswith() была дырой: соседний каталог с тем же
+    префиксом (~/voicecomic-workspace-evil) проходил как «внутри».
+    """
+    raw = str(user_path or "").replace("\\", "/")
+    p = (WORKSPACE_ROOT / raw.lstrip("/")).resolve()
+    if p != WORKSPACE_ROOT and not p.is_relative_to(WORKSPACE_ROOT):
         raise HTTPException(400, "Path traversal blocked")
     return p
+
+
+def safe_filename(name: str) -> str:
+    """Имя файла от клиента нельзя подставлять в путь как есть:
+    filename="../../evil" уводил запись за пределы рабочего каталога."""
+    base = os.path.basename(str(name or "").replace("\\", "/")).strip()
+    base = re.sub(r"[\x00-\x1f\x7f]", "", base)
+    if base in ("", ".", ".."):
+        raise HTTPException(400, "Недопустимое имя файла")
+    if base.startswith("."):
+        base = "_" + base
+    return base[:255]
 
 async def stream_pty(ws: WebSocket, cols: int = 80, rows: int = 24, cwd: str = "/"):
     """Запускает pty-процесс (bash) и проксирует stdin/stdout через WS."""
@@ -100,11 +129,19 @@ async def stream_pty(ws: WebSocket, cols: int = 80, rows: int = 24, cwd: str = "
 
     pid, fd = pty.fork()
     if pid == 0:  # child
-        os.chdir(resolve_path(cwd))
-        os.environ["TERM"] = "xterm-256color"
-        os.environ["COLUMNS"] = str(cols)
-        os.environ["LINES"] = str(rows)
-        os.execvp("bash", ["bash"])
+        # Ребёнок — копия сервера с его сокетами и event loop. Любое
+        # исключение здесь (например, resolve_path поднял HTTPException)
+        # всплыло бы в копии ASGI-приложения, и она продолжила бы крутиться
+        # вместо bash. Поэтому любая ошибка — это немедленный _exit.
+        try:
+            os.chdir(resolve_path(cwd))
+            os.environ["TERM"] = "xterm-256color"
+            os.environ["COLUMNS"] = str(cols)
+            os.environ["LINES"] = str(rows)
+            os.execvp("bash", ["bash"])
+        except BaseException:
+            pass
+        os._exit(1)  # exec не вернулся — до этого места дойдём только при ошибке
     else:  # parent
         # set non-blocking
         fl = fcntl.fcntl(fd, fcntl.F_GETFL)
@@ -137,14 +174,13 @@ async def stream_pty(ws: WebSocket, cols: int = 80, rows: int = 24, cwd: str = "
                         if data.get("type") == "input":
                             os.write(fd, data["data"].encode())
                         elif data.get("type") == "resize":
-                            cols, rows = data["cols"], data["rows"]
+                            c, r = int(data.get("cols", cols)), int(data.get("rows", rows))
+                            cols, rows = c, r
                             winsize = struct.pack("HHHH", rows, cols, 0, 0)
                             fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
                     except json.JSONDecodeError:
                         os.write(fd, msg.encode())
-            except WebSocketDisconnect:
-                pass
-            except OSError:
+            except (WebSocketDisconnect, OSError):
                 pass
 
         read_task = asyncio.create_task(read_pty())
@@ -159,7 +195,12 @@ async def stream_pty(ws: WebSocket, cols: int = 80, rows: int = 24, cwd: str = "
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
-        await asyncio.gather(*pending, return_exceptions=True)
+        # reap: без waitpid каждая сессия терминала оставляла зомби
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+        await asyncio.gather(*done, return_exceptions=True)
 
 # ─── Routes ───
 @app.get("/health")
@@ -190,7 +231,7 @@ async def list_files(path: str = "", user: dict = Depends(get_user)):
 
 @app.post("/files/upload")
 async def upload_file(path: str = Form(""), file: UploadFile = File(...), user: dict = Depends(get_user)):
-    dest = resolve_path(path) / file.filename
+    dest = resolve_path(path) / safe_filename(file.filename)
     dest.parent.mkdir(parents=True, exist_ok=True)
     content = await file.read()
     dest.write_bytes(content)
@@ -209,7 +250,6 @@ async def delete_file(path: str, user: dict = Depends(get_user)):
     if not f.exists():
         raise HTTPException(404, "Not found")
     if f.is_dir():
-        import shutil
         shutil.rmtree(f)
     else:
         f.unlink()
@@ -261,8 +301,6 @@ async def workspace_info(user: dict = Depends(get_user)):
         "used_gb": round(used / 1e9, 1),
         "free_gb": round(free / 1e9, 1),
     }
-
-import shutil
 
 if __name__ == "__main__":
     import uvicorn

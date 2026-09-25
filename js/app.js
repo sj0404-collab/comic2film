@@ -1,7 +1,7 @@
 /* Главный модуль: состояние проекта, табы, импорт, OCR, роли, TTS, рендер. */
 
 import {
-  toast, uuid, download, fmtDur, loadImage, loadScript, loadCss,
+  toast, uuid, download, fmtDur, loadImage, loadScript, loadCss, isAudioFile,
 } from './util.js';
 import { idbSet, idbGet, KEY_PROJECT, KEY_SETTINGS } from './store.js';
 import { analyzeRoles, translateLines, countTranslated, refreshFreeModels, mergeFreeModels, PROVIDERS, provider, providerHasVision, modelMeta } from './ai.js';
@@ -205,13 +205,18 @@ async function handleFiles(files) {
   if (!list.length) return;
   $('imp-progress').classList.remove('hidden');
   setProgress(0.02, 'Анализ файлов…');
-  const isAudio = (f) => /^audio|^video/.test(f.type) || /\.(mp3|wav|ogg|m4a|aac|flac|opus|mp4|mkv|mov|avi|webm)$/i.test(f.name);
-  const audioFiles = list.filter(isAudio);
-  const pageFiles = list.filter(f => !audioFiles.includes(f));
+  // Раньше тип определялся своей регуляркой, которая разошлась с util.js
+  // (например, .mka в AUDIO_EXT не попадал). Теперь один источник истины.
+  const audioFiles = list.filter(isAudioFile);
+  const pageFiles = list.filter(f => !isAudioFile(f));
   try {
     if (audioFiles.length && !pageFiles.length) await importAudio(audioFiles);
     else if (pageFiles.length) await importPages(pageFiles);
     else toast('Не получилось определить тип файлов', 'err');
+    if (audioFiles.length && pageFiles.length) {
+      toast('Аудио и изображения в одном списке: обработаны только ' +
+        (pageFiles.length ? 'страницы' : 'аудио') + ' — загрузите по отдельности', 'err');
+    }
   } catch (e) {
     toast(e.message || String(e), 'err');
   }
@@ -431,8 +436,12 @@ async function ocrAll(goToScript) {
         onProgress: (n) => setProgress(i / targets.length + n / targets.length, `OCR ${i + 1}/${targets.length}`),
       });
       p.bubbles = (res.bubbles || []).map(b => ({
-        id: uuid(), text: b.text, tr: '', roleId: '', x: b.x, y: b.y, w: b.w, h: b.h,
+        id: b.id || uuid(), text: b.text, tr: b.tr || '', roleId: b.roleId || '',
+        x: b.x, y: b.y, w: b.w, h: b.h, order: b.order,
       }));
+      // vision-OCR не возвращает координат — запоминаем это, чтобы монтаж
+      // не рисовал выдуманные пузыри и не зумил по вымышленным точкам
+      p.bubblesHaveBoxes = res.boxes !== false;
       setProgress((i + 1) / targets.length, `стр. ${i + 1}: ${res.bubbles.length} реплик`);
     } catch (e) {
       console.error(e);

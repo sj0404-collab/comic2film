@@ -150,6 +150,12 @@ function pageImgSync(url) { return _imgCache.get(url) || null; }
 
 const smooth = (a) => a * a * (3 - 2 * a); // smoothstep
 
+function bubbleHasBox(b, page) {
+  if (!b) return false;
+  if (page && page.bubblesHaveBoxes === false) return false;
+  return b.x != null && b.y != null && b.w > 0 && b.h > 0;
+}
+
 function cameraFor(item, clock, P, C, zoomMode) {
   const pw = P.w || 1, ph = P.h || 1;
   const W = C.w, H = C.h;
@@ -157,7 +163,7 @@ function cameraFor(item, clock, P, C, zoomMode) {
   const cx = pw / 2, cy = ph / 2;
   const clampV = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-  if (item.bubble && zoomMode !== 'none') {
+  if (bubbleHasBox(item.bubble, item.page) && zoomMode !== 'none') {
     const b = item.bubble;
     const bC2x = b.x + b.w / 2, bC2y = b.y + b.h / 2;
     if (zoomMode === 'pan') {
@@ -206,7 +212,9 @@ function wrapLines(ctx, text, maxW) {
 }
 
 function drawCaption(ctx, item, cam, C, project, settings) {
-  const mode = settings.caption || 'bubble';
+  // субтитры снизу. Реплика без координат (vision-OCR не отдаёт bbox)
+  // всегда рисуется нижней подписью: выдумывать прямоугольник нельзя.
+  const mode = bubbleHasBox(item.bubble, item.page) ? (settings.caption || 'bubble') : (settings.caption === 'none' ? 'none' : 'sub');
   const biling = settings.biling || 'orig';
   const role = item.bubble && project.roles.find(r => r.id === item.bubble.roleId);
   const mainText = item.bubble ? item.bubble.text : '';
@@ -214,7 +222,7 @@ function drawCaption(ctx, item, cam, C, project, settings) {
 
   if (mode === 'none') return;
 
-  if (mode === 'bubble' && item.bubble) {
+  if (mode === 'bubble' && bubbleHasBox(item.bubble, item.page)) {
     // прямоугольник пузыря в координатах страницы → экран
     const px = item.bubble.x, py = item.bubble.y, pww = item.bubble.w, phh = item.bubble.h;
     const sxx = (px - cam.sx) * (C.w / cam.sw);

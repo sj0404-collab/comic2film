@@ -35,8 +35,18 @@ export async function sha256HexBrowser(str) {
 }
 
 export function uuid() {
-  if (crypto && crypto.randomUUID) return crypto.randomUUID().replace(/-/g, '');
-  return 'xxxxxxxxx'.replace(/x/g, () => Math.floor(Math.random() * 16).toString(16)) + Date.now().toString(16);
+  // typeof, а не прямая проверка: в окружениях без globalThis.crypto
+  // (старый Node, небезопасный контекст) обращение к crypto бросало ReferenceError
+  if (typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/-/g, '');
+  }
+  const rnd = (n) => {
+    const b = new Uint8Array(n);
+    if (typeof crypto !== 'undefined' && crypto && crypto.getRandomValues) crypto.getRandomValues(b);
+    else for (let i = 0; i < n; i++) b[i] = Math.floor(Math.random() * 256);
+    return [...b].map(x => x.toString(16).padStart(2, '0')).join('');
+  };
+  return rnd(16);
 }
 
 /* Экранирование текста для SSML + удаление недопустимых символов (как в edge-tts) */
@@ -45,8 +55,8 @@ export function ssmlEscape(text) {
   const out = [];
   for (const ch of s) {
     const c = ch.codePointAt(0);
-    if ((c >= 0 && c <= 8) || (c >= 11 && c <= 12) || (c >= 14 && c <= 31)) { out.push(' '); continue; }
-    out.push(ch);
+    if ((c >= 0 && c <= 8) || (c >= 11 && c <= 12) || (c >= 14 && c <= 31)) out.push(' ');
+    else out.push(ch);
   }
   s = out.join('');
   return s
@@ -191,13 +201,13 @@ export function trimSilence(samples, sr, { threshold = 0.02, margin = 0.09, winM
   if (!samples) return { start: 0, end: 0 };
   const n = samples.length;
   const win = Math.max(1, Math.floor(sr * winMs / 1000));
-  const bytePad = Math.max(1, Math.floor(sr * margin));
+  const padSamples = Math.max(1, Math.floor(sr * margin)); // запас в отсчётах, не в байтах
   const peak = (from, to) => { let m = 0; for (let i = from; i < to && i < n; i++) { const v = Math.abs(samples[i]); if (v > m) m = v; } return m; };
   let start = -1;
-  for (let i = 0; i < n; i += win) { if (peak(i, i + win) > threshold) { start = Math.max(0, i - bytePad); break; } }
-  if (start < 0) return { start: 0, end: 0 };
+  for (let i = 0; i < n; i += win) { if (peak(i, i + win) > threshold) { start = Math.max(0, i - padSamples); break; } }
+  if (start < 0) return { start: 0, end: 0 }; // тишина целиком
   let end = n;
-  for (let i = n - win; i >= 0; i -= win) { if (peak(i, i + win) > threshold) { end = Math.min(n, i + win + bytePad); break; } }
+  for (let i = n - win; i >= 0; i -= win) { if (peak(i, i + win) > threshold) { end = Math.min(n, i + win + padSamples); break; } }
   return { start, end };
 }
 

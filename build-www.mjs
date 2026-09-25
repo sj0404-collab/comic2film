@@ -1,4 +1,6 @@
-/* Сборка www/ для Capacitor: только файлы приложения, без node_modules. */
+/* Сборка www/ — единственная публикуемая папка (GitHub Pages и Capacitor).
+ * Копируются только файлы приложения: backend/, relay/, tests/, tools/ и
+ * package.json наружу не выходят. */
 import { mkdirSync, cpSync, rmSync } from 'node:fs';
 
 rmSync('www', { recursive: true, force: true });

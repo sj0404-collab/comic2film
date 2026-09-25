@@ -1,11 +1,14 @@
 /* Разбор исходников: картинки, PDF, ZIP/CBZ, RAR/CBR, аудио/видео. */
 
-import { byNumName, isImageFile, extOf, IMAGE_EXT, loadScript, numKey } from './util.js';
+import { byNumName, isImageFile, extOf, IMAGE_EXT, loadScript, numKey, isArchiveFile, isPdfFile } from './util.js';
 
 const PDFJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
 const PDFJS_WORKER = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 const JSZIP_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
 const UNRAR_BASE = 'https://cdn.jsdelivr.net/npm/node-unrar-js@2.0.2/esm/js/';
+
+/* Жёсткий предел страниц: 700 — иначе рендер и хранилище встают колом. */
+const MAX_PAGES = 700;
 
 let _unrarPromise = null;
 
@@ -62,7 +65,7 @@ async function extractZip(file, { onProgress }) {
     onProgress && onProgress((i + 1) / Math.max(1, names.length), `Распаковка ${names[i]}`);
     const blob = await zip.files[names[i]].async('blob');
     pages.push(toFile(blob, names[i]));
-    if (pages.length > 700) break;
+    if (pages.length >= MAX_PAGES) break;
   }
   return pages;
 }
@@ -85,7 +88,7 @@ async function extractRar(file, { onProgress }) {
     onProgress && onProgress(pages.length / Math.max(1, names.length), `Распаковка ${fileHeader.name}`);
     const blob = new Blob([uint8], { type: guessMime(fileHeader.name) });
     pages.push(toFile(blob, fileHeader.name));
-    if (pages.length > 700) break;
+    if (pages.length >= MAX_PAGES) break;
   }
   return pages;
 }
@@ -106,7 +109,7 @@ async function extractPdf(file, { onProgress }) {
   const doc = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
   const pages = [];
   const maxDim = 1900;
-  for (let i = 1; i <= doc.numPages && pages.length < 700; i++) {
+  for (let i = 1; i <= doc.numPages && pages.length < MAX_PAGES; i++) {
     onProgress && onProgress(i / doc.numPages, `Растеризация страницы ${i}/${doc.numPages}`);
     const page = await doc.getPage(i);
     const v0 = page.getViewport({ scale: 1 });
@@ -127,14 +130,17 @@ async function extractPdf(file, { onProgress }) {
 export async function extractPages(file, { onProgress } = {}) {
   onProgress && onProgress(0, 'Анализ файла…');
   const ext = extOf(file.name);
-  if (ext === 'pdf' || file.type === 'application/pdf') return extractPdf(file, { onProgress });
+  if (isPdfFile(file)) return extractPdf(file, { onProgress });
   if (ext === 'zip' || ext === 'cbz') return extractZip(file, { onProgress });
   if (ext === 'rar' || ext === 'cbr') return extractRar(file, { onProgress });
   if (isImageFile(file)) {
     onProgress && onProgress(0.9, 'Загрузка картинки…');
     return [file];
   }
-  throw new Error('Формат не поддерживается для страниц: ' + ext);
+  // .tar/.7z стоят в ARCH_EXT, но распаковщика для них нет — раньше падало
+  // с невнятным «Формат не поддерживается»
+  if (isArchiveFile(file)) throw new Error('Архив ' + ext + ' не поддерживается: используйте ZIP/CBZ или RAR/CBR');
+  throw new Error('Формат не поддерживается для страниц: ' + (ext || 'без расширения'));
 }
 
 /* ================================================================

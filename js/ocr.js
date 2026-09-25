@@ -1,7 +1,7 @@
 /* OCR: локальный Tesseract (точные боксы слов) или vision-ИИ.
  * Возвращает «пузыри» реплик с координатами. */
 
-import { clusterBubbleWords, sortBubblesReadingOrder, loadImage, loadScript } from './util.js';
+import { clusterBubbleWords, sortBubblesReadingOrder, loadImage, loadScript, uuid } from './util.js';
 import { visionExtractLines } from './ai.js';
 import { detectBubbles } from './yolo.js';
 
@@ -80,7 +80,7 @@ export async function ocrPage({ page, lang = 'rus', settings, onProgress }) {
           raw += (raw ? '\n' : '') + text.trim();
         }
         onProgress(0.98);
-        if (bubbles.length) return { bubbles, raw, w: canvas.width, h: canvas.height };
+        if (bubbles.length) return { bubbles, raw, w: canvas.width, h: canvas.height, boxes: true };
       }
     } catch (e) {
       onProgress(0.45);
@@ -97,25 +97,29 @@ export async function ocrPage({ page, lang = 'rus', settings, onProgress }) {
       rtl: settings.rtl === true || lang === 'jpn' || lang === 'chi_sim' || lang === 'kor',
       vertical: lang === 'jpn',
     });
-    return { bubbles, raw: data.text || '', w: canvas.width, h: canvas.height };
+    return { bubbles, raw: data.text || '', w: canvas.width, h: canvas.height, boxes: true };
   }
 
-  // vision-провайдер из каталога: OCR-селект = конкретный ИИ-провайдер
+  // vision-провайдер из каталога: OCR-селект = конкретный ИИ-провайдер.
+  // Модель возвращает только строки, без координат. Раньше боксы выдумывались
+  // равномерной сеткой 5×N, то есть Ken Burns зум и «пузырь» в монтаже ехали по
+  // вымышленным точкам. Теперь координаты не выдумываются: помечаем реплики
+  // как безбоксовые (page.bubblesHaveBoxes = false), и движок монтажа при
+  // неизвестных координатах не рисует пузырь и не держит на нём зум.
   const dataURL = canvas.toDataURL('image/jpeg', 0.85);
   onProgress(0.2);
   const vsettings = { ...settings, ai: settings.ocr };
   const lines = await visionExtractLines(vsettings, dataURL, langName);
   onProgress(0.9);
   const W = canvas.width, H = canvas.height;
-  const per = Math.max(1, Math.ceil(lines.length / 5));
-  const bubbles = lines.map((text, i) => {
-    const col = Math.floor(i / per), row = i % per;
-    return {
-      x: (col * W) / Math.ceil(lines.length / per) + 8, y: (row * (H / per)) + 6,
-      w: W / Math.ceil(lines.length / per) - 16, h: H / per - 10, text,
-    };
-  });
-  return { bubbles, raw: lines.join('\n'), w: W, h: H };
+  const rows = Math.max(1, lines.length);
+  const bubbles = lines.map((text, i) => ({
+    id: uuid(), text, tr: '', roleId: '',
+    x: null, y: null, w: null, h: null,
+    // порядок строк для таймлайна: равномерно по высоте страницы
+    order: i / rows,
+  }));
+  return { bubbles, raw: lines.join('\n'), w: W, h: H, boxes: false };
 }
 
 /* OCR внутри бокса облачка (b: {x,y,w,h} в пикселях канваса). */

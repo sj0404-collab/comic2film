@@ -20,6 +20,10 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+# python
+__pycache__/
+*.pyc
+
 # test artifacts
 /tmp/opencode/
 # локальный release-ключ APK (НЕ коммитить — пароли в GitHub Secrets)

@@ -25,8 +25,11 @@ function storeOp(store, mode, fn) {
       const tx = db.transaction(store, mode);
       const s = tx.objectStore(store);
       const r = fn(s);
+      // onabort обязателен: при откате по квоте не срабатывает ни oncomplete,
+      // ни onerror, и промис оставался ждать навсегда — сохранение молчало
       tx.oncomplete = () => res(r && 'result' in r ? r.result : undefined);
       tx.onerror = () => rej(tx.error);
+      tx.onabort = () => rej(tx.error || new DOMException('Транзакция прервана (не хватило места)', 'QuotaExceededError'));
     }).catch(rej);
   });
 }

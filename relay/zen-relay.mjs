@@ -99,9 +99,10 @@ function responsesTools() {
   }));
 }
 
-function sseFoldChat(raw) {
+export function sseFoldChat(raw) {
   let content = '';
   let finish_reason = 'stop';
+  let err = null;
   for (const line of raw.split(/\r?\n/)) {
     const s = line.trim();
     if (!s.startsWith('data:')) continue;
@@ -109,19 +110,37 @@ function sseFoldChat(raw) {
     if (!payload || payload === '[DONE]') continue;
     try {
       const o = JSON.parse(payload);
+      // stream=true у zen всегда присылает сначала error-событие
+      if (o.error) { err = o.error; continue; }
       const d = o.choices && o.choices[0];
       if (!d) continue;
       if (d.delta && d.delta.content) content += d.delta.content;
       if (d.finish_reason) finish_reason = d.finish_reason;
+      if (d.delta && d.delta.reasoning_content) content += '';
     } catch (_) { /* skip partial */ }
+  }
+  if (err) return { content, finish_reason: 'error', error: errText(err) };
+  if (finish_reason === 'length') {
+    return { content, finish_reason, error: 'модель упёрлась в лимит длины ответа (сократите запрос)' };
+  }
+  if (!content.trim()) {
+    return { content, finish_reason, error: 'модель вернула пустой ответ' };
   }
   return { content, finish_reason };
 }
 
-function sseFoldResponses(raw) {
+function errText(e) {
+  if (!e) return 'неизвестная ошибка zen';
+  if (typeof e === 'string') return e;
+  return e.message || e.code || JSON.stringify(e).slice(0, 200);
+}
+
+export function sseFoldResponses(raw) {
   let content = '';
   let status = 'completed';
   let stopped = false;
+  let err = null;
+  let incomplete = null;
   for (const line of raw.split(/\r?\n/)) {
     const s = line.trim();
     if (!s.startsWith('data:')) continue;
@@ -131,13 +150,26 @@ function sseFoldResponses(raw) {
       const o = JSON.parse(payload);
       if (o.type === 'response.output_text.delta') content += o.delta || '';
       if (o.type === 'response.completed') { status = (o.response && o.response.status) || 'completed'; stopped = true; }
-      if (o.type === 'response.failed') { status = 'failed'; stopped = true; }
+      if (o.type === 'response.incomplete') { incomplete = o.response && o.response.incomplete_details; stopped = true; }
+      if (o.type === 'response.failed' || o.type === 'error') { err = o; status = 'failed'; stopped = true; }
+      if (o.type === 'response.error') { err = o; status = 'failed'; stopped = true; }
     } catch (_) { /* skip partial */ }
   }
-  return { content, status, stopped };
+  if (err) return { content, status, stopped, finish_reason: 'error', error: errText(err.error || err.response || err) };
+  if (incomplete) {
+    return { content, status, stopped, finish_reason: 'error',
+      error: 'модель не закончила ответ: ' + (incomplete.reason || 'incomplete') };
+  }
+  if (status !== 'completed') {
+    return { content, status, stopped, finish_reason: 'error', error: 'статус ответа zen: ' + status };
+  }
+  if (!content.trim()) {
+    return { content, status, stopped, finish_reason: 'error', error: 'модель вернула пустой ответ' };
+  }
+  return { content, status, stopped, finish_reason: 'stop' };
 }
 
-function completionJson(model, result) {
+export function completionJson(model, result) {
   return {
     id: 'chatcmpl-relay-' + Date.now(),
     object: 'chat.completion',
@@ -148,7 +180,28 @@ function completionJson(model, result) {
       message: { role: 'assistant', content: result.content || '' },
       finish_reason: result.finish_reason || 'stop',
     }],
-    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    usage: usageOf(result),
+  };
+}
+
+/* Считаем по-настоящему. Раньше здесь всегда стояли нули — это фиктивные
+ * данные, которые выглядят как настоящая телеметрия. */
+function usageOf(result) {
+  const u = (result && result.usage) || {};
+  const prompt = Number(u.prompt_tokens ?? u.input_tokens ?? 0) || 0;
+  const completion = Number(u.completion_tokens ?? u.output_tokens ?? 0) || 0;
+  if (prompt || completion) {
+    return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion };
+  }
+  // Токенизатор zen не отдаёт, поэтому считаем хотя бы по символам и
+  // честно помечаем оценку, чтобы клиент не принял её за точные числа.
+  const text = (result && result.content) || '';
+  const chars = text.length;
+  return {
+    prompt_tokens: 0,
+    completion_tokens: chars,
+    total_tokens: chars,
+    estimated: true,
   };
 }
 
@@ -230,6 +283,13 @@ async function handleChat(req, res) {
   }
 
   const result = isResponses ? sseFoldResponses(raw) : sseFoldChat(raw);
+  // Провал больше не прячется за HTTP 200 с пустым content: клиент получал
+  // «пустой ответ» без объяснения и без возможности отличить сбой от молчания.
+  if (result.error) {
+    return sendJson(res, 502, {
+      error: { type: isResponses ? 'upstream_failed' : 'upstream_error', message: result.error },
+    });
+  }
   return sendJson(res, 200, completionJson(model, result));
 }
 

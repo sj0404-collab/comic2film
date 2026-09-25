@@ -435,5 +435,138 @@ function codeOnly(src) {
   ok(/project\.settings = settings/.test(appCode), 'app.js: project.settings выставляется при старте (иначе таймлайн строится по умолчанию)');
 }
 
+/* ================================================================
+ * Регрессы на MEDIUM: безопасность бэкенда, relay, service worker,
+ * APK-версия, выдуманные bbox, вложения чата, дедуп type-логики.
+ * ================================================================ */
+
+/* [21, 22, 23, 24] backend/main.py */
+{
+  const py = fs.readFileSync(new URL('../backend/main.py', import.meta.url), 'utf8');
+  const pyCode = codeOnly(py);
+  ok(!/str\(p\)\.startswith\(str\(WORKSPACE_ROOT\)\)/.test(pyCode),
+    'backend: resolve_path не использует startswith (соседний каталог с тем же префиксом проходил)');
+  ok(/is_relative_to\(WORKSPACE_ROOT\)/.test(pyCode), 'backend: граница проверяется через is_relative_to');
+  ok(/def safe_filename/.test(pyCode) && /safe_filename\(file\.filename\)/.test(pyCode),
+    'backend: имя файла при загрузке проходит через safe_filename');
+  ok(/os\.path\.basename/.test(pyCode), 'backend: safe_filename срезает каталоги из имени');
+  ok(/TOKEN_TTL/.test(pyCode) && /TOKEN_CACHE\[token\] = \(now \+ TOKEN_TTL/.test(pyCode),
+    'backend: кэш токена имеет срок жизни (отозванный токен иначе жил до перезапуска)');
+  ok(/os\._exit\(1\)/.test(pyCode),
+    'backend: ошибка в child-ветке pty.fork() завершает ребёнка, а не продолжает копию сервера');
+  ok(/os\.waitpid/.test(pyCode), 'backend: reap после pty (иначе зомби на каждую сессию терминала)');
+  ok(/asyncio\.gather\(\*done/.test(pyCode), 'backend: gather ждёт завершившиеся задачи, а не отменённые');
+  ok(/^import shutil$/m.test(py) && !/\n\s*import shutil\n\s*if __name__/.test(pyCode),
+    'backend: shutil импортируется вверху файла, а не после эндпоинтов');
+}
+
+/* [25] relay/zen-relay.mjs: сбой не выдаётся за успех */
+{
+  const relay = await import('../relay/zen-relay.mjs');
+  const sse = (...l) => l.join('\n') + '\n';
+  let r = relay.sseFoldChat(sse('data: {"choices":[{"delta":{"content":"Привет"}}]}', 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'));
+  ok(r.content === 'Привет' && !r.error, 'relay: нормальный ответ собирается из дельт');
+  r = relay.sseFoldChat(sse('data: {"choices":[{"delta":{"content":"x"}}]}', 'data: {"error":{"message":"rate limit"}}'));
+  ok(!!r.error && r.finish_reason === 'error', 'relay: error-событие → ошибка, finish_reason=error (было тихо)');
+  r = relay.sseFoldChat(sse('data: {"choices":[{"delta":{},"finish_reason":"length"}]}'));
+  ok(!!r.error && /лимит длины/.test(r.error), 'relay: обрыв по длине → внятная ошибка');
+  ok(!!relay.sseFoldChat(sse('data: [DONE]')).error, 'relay: пустой поток → ошибка, а не пустой ответ');
+  r = relay.sseFoldResponses(sse('data: {"type":"response.failed","error":{"message":"boom"}}'));
+  ok(!!r.error && /boom/.test(r.error), 'relay: response.failed → ошибка');
+  ok(!!relay.sseFoldResponses(sse('data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}')).error,
+    'relay: response.incomplete → ошибка с причиной');
+  const c = relay.completionJson('m', { content: 'Привет, мир', finish_reason: 'stop' });
+  ok(c.usage.total_tokens > 0 && c.usage.estimated === true, 'relay: usage больше не нули, а честная оценка с флагом');
+  ok(relay.completionJson('m', { content: 'x', usage: { input_tokens: 5, output_tokens: 3 } }).usage.total_tokens === 8,
+    'relay: если апстрим дал токены — используются они');
+  const relaySrc = codeOnly(fs.readFileSync(new URL('../relay/zen-relay.mjs', import.meta.url), 'utf8'));
+  ok(/if \(result\.error\)[\s\S]{0,200}502/.test(relaySrc), 'relay: сбой апстрима отдаётся как 502, не как 200 с пустым content');
+}
+
+/* [26] sw.js: runtime-кэширование реально работает */
+{
+  const sw = codeOnly(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'));
+  const nf = sw.slice(sw.indexOf('async function networkFirst'), sw.length);
+  ok(!/e\.waitUntil\(cache\.put/.test(nf), 'sw.js: cache.put не идёт через e.waitUntil после await (это всегда бросало)');
+  ok(/await cache\.put\(req, copy\)/.test(nf), 'sw.js: ответ кэшируется обычным awaited-вызовом');
+  ok(/res\.clone\(\)\.arrayBuffer\(\)/.test(nf), 'sw.js: копия ответа читается до того, как оригинал уйдёт клиенту');
+  ok(/res\.status !== 206/.test(sw), 'sw.js: частичные ответы (206) не кэшируются');
+}
+
+/* [27] tools/patch-signing.mjs: версия APK обновляема */
+{
+  const ps = codeOnly(fs.readFileSync(new URL('../tools/patch-signing.mjs', import.meta.url), 'utf8'));
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  ok(!/versionCode 1\\n/.test(ps) && !/'versionCode 1'/.test(ps), 'patch-signing: versionCode не зашит в 1');
+  ok(/major \* 10000 \+ minor \* 100 \+ patch/.test(ps), 'patch-signing: versionCode выводится из версии');
+  ok(/Math\.max\(curCode \+ 1, ver\.code\)/.test(ps), 'patch-signing: versionCode монотонно растёт (иначе APK не обновляется)');
+  ok(new RegExp('versionName "' + pkg.version.replace(/\./g, '\\.') + '"').test(ps.replace(/\$\{ver\.name\}/, pkg.version)) ||
+     /ver\.name/.test(ps), 'patch-signing: versionName берётся из package.json');
+  ok(!/!g\.includes\('signingConfigs'\)/.test(ps), 'patch-signing: наличие debug-блока signingConfigs больше не отключает патч');
+  ok(/signingConfigs\s*\{[\s\S]*?\brelease\s*\{/.test(ps), 'patch-signing: проверяется именно release-подпись');
+  ok(/process\.exit\(1\)/.test(ps), 'patch-signing: отсутствие build.gradle — ошибка, а не тихий выход');
+}
+
+/* [28] deploy.yml публикует только собранный www */
+{
+  const dy = fs.readFileSync(new URL('../.github/workflows/deploy.yml', import.meta.url), 'utf8');
+  const dyCode = dy.replace(/\s*#.*$/gm, '');   // без комментариев
+  ok(/path: www/.test(dyCode), 'deploy.yml: публикуется www/, а не весь репозиторий');
+  ok(!/path: \s*\.\s*$/.test(dyCode), 'deploy.yml: path: . больше не используется (иначе наружу уходит backend/ и relay/)');
+  const bw = fs.readFileSync(new URL('../build-www.mjs', import.meta.url), 'utf8');
+  ok(!/['"]backend['"]|['"]relay['"]|['"]tests['"]/.test(bw), 'build-www: в www/ не копируются backend/relay/tests');
+}
+
+/* [29] vision-OCR больше не выдумывает координаты */
+{
+  const ocr = codeOnly(fs.readFileSync(new URL('../js/ocr.js', import.meta.url), 'utf8'));
+  ok(!/w: W \/ Math\.ceil/.test(ocr) && !/x: \(col \* W\)/.test(ocr), 'ocr.js: фиктивная сетка координат удалена');
+  ok(/x: null, y: null, w: null, h: null/.test(ocr), 'ocr.js: реплики без боксов помечаются null, а не выдуманными числами');
+  ok(/boxes: false/.test(ocr) && /boxes: true/.test(ocr), 'ocr.js: результат сообщает, есть ли реальные координаты');
+  const eng = codeOnly(fs.readFileSync(new URL('../js/engine.js', import.meta.url), 'utf8'));
+  ok(/function bubbleHasBox/.test(eng), 'engine.js: наличие настоящего бокса проверяется явно');
+  ok(/bubbleHasBox\(item\.bubble, item\.page\) \? \(settings\.caption/.test(eng),
+    'engine.js: реплика без бокса рисуется нижней подписью, а не прямоугольником');
+  const app = codeOnly(fs.readFileSync(new URL('../js/app.js', import.meta.url), 'utf8'));
+  ok(/p\.bubblesHaveBoxes = res\.boxes !== false/.test(app), 'app.js: факт отсутствия координат сохраняется в странице');
+}
+
+/* [31] чат: текстовые вложения уходят модели */
+{
+  const chat = codeOnly(fs.readFileSync(new URL('../js/chat.js', import.meta.url), 'utf8'));
+  ok(/async function readAttachmentText/.test(chat), 'chat.js: есть чтение текстовых вложений');
+  ok(/attachBlock/.test(chat) && /Содержимое приложенных файлов/.test(chat), 'chat.js: содержимое вложений включается в запрос');
+  ok(/const images = files\.filter\(f => f\.dataURL\)/.test(chat), 'chat.js: картинки и текстовые файлы обрабатываются раздельно');
+  ok(!/f\.objectUrl \|\| f\.objectUrl/.test(chat), 'chat.js: мёртвая ветка f.objectUrl убрана');
+  ok(!/idbGet && \(await idbGet/.test(chat), 'chat.js: убрана бессмысленная проверка idbGet на функцию');
+  ok(/MAX_ATTACH_BYTES/.test(chat) && /MAX_TOTAL_CHARS/.test(chat), 'chat.js: у вложений есть лимиты размера');
+}
+
+/* [32, 13, 14] дедуп type-логики, лимит страниц, uuid */
+{
+  const U = await import('../js/util.js');
+  const saved = globalThis.crypto;
+  try {
+    delete globalThis.crypto;
+    const u = U.uuid();
+    ok(typeof u === 'string' && /^[0-9a-f]{32}$/.test(u), 'uuid: работает без globalThis.crypto (был ReferenceError)');
+    ok(new Set(Array.from({ length: 200 }, () => U.uuid())).size === 200, 'uuid: без crypto значения не повторяются');
+  } finally {
+    if (saved !== undefined) globalThis.crypto = saved;
+  }
+  ok(U.isAudioFile({ name: 'v.mka', type: 'audio/x-matroska' }) === true, 'isAudioFile: .mka (это было в AUDIO_EXT, но не в регулярке app.js)');
+  ok(U.isAudioFile({ name: 'p.png', type: 'image/png' }) === false, 'isAudioFile: картинка не считается аудио');
+  ok(U.isPdfFile({ name: 'd.pdf', type: '' }) === true, 'isPdfFile: pdf по расширению');
+  const imp = codeOnly(fs.readFileSync(new URL('../js/import.js', import.meta.url), 'utf8'));
+  ok(/const MAX_PAGES = 700/.test(imp), 'import.js: лимит страниц вынесен в константу');
+  ok(!/pages\.length > 700/.test(imp), 'import.js: убран off-by-one на лимите страниц');
+  ok(/Архив .* не поддерживается/.test(imp), 'import.js: .tar/.7z из ARCH_EXT объясняются, а не падают');
+  const app = codeOnly(fs.readFileSync(new URL('../js/app.js', import.meta.url), 'utf8'));
+  ok(/list\.filter\(isAudioFile\)/.test(app) && !/\^audio\|video/.test(app),
+    'app.js: тип файла определяется предикатом util.js, а не своей регуляркой');
+  const st = codeOnly(fs.readFileSync(new URL('../js/store.js', import.meta.url), 'utf8'));
+  ok(/tx\.onabort/.test(st), 'store.js: откат транзакции (квота) не вешает промис навечно');
+}
+
 console.log(fails ? `\n${fails} FAILURES` : '\nALL PASS');
 process.exit(fails ? 1 : 0);

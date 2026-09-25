@@ -58,19 +58,33 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+  if (req.headers.get('range')) return; // частичные ответы не кэшируем
   e.respondWith(networkFirst(req, e));
 });
 
 /* Сеть первым, кэш — только как запасной вариант на случай офлайна.
  * В APK «сеть» — это свежие файлы из установленного пакета, поэтому
- * приложение всегда стартует с актуальной версией. */
-async function networkFirst(req, e) {
+ * приложение всегда стартует с актуальной версией.
+ *
+ * Кэширование выполняется НЕ через e.waitUntil: после await это событие уже
+ * не в диспетчере, и waitUntil бросает InvalidStateError — ошибка глоталась,
+ * а значит ничего не кэшировалось вообще (работал только precache в install).
+ * Поэтому ответ сначала полностью читается в память и уже потом кладётся в
+ * кэш обычным awaited-вызовом, который ответа не ждёт. */
+async function networkFirst(req) {
   const cache = await caches.open(CACHE);
   try {
     const res = await fetch(req);
-    const cacheable = res && (res.ok || res.type === 'opaque');
-    if (cacheable && !req.headers.get('range')) {
-      try { e.waitUntil(cache.put(req, res.clone())); } catch (err) { /* нет waitUntil */ }
+    if (res && res.ok && res.status !== 206) {
+      try {
+        // копия читается целиком; оригинал отдаём клиенту без задержек
+        const copy = new Response(await res.clone().arrayBuffer(), {
+          status: res.status,
+          statusText: res.statusText,
+          headers: res.headers,
+        });
+        await cache.put(req, copy);
+      } catch (err) { /* квота/приватный режим — работаем без записи */ }
     }
     return res;
   } catch (err) {
