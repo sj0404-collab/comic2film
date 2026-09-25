@@ -6,8 +6,17 @@ import {
   estimatePauseMs, trimSilence, download, fmtDur, loadImage, fmtBytes,
 } from './util.js';
 
-const FF_FFMPEG = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js';
-const FF_CORE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js';
+/* ffmpeg.wasm без сборщика: только ESM-дистрибутив.
+ * UMD-сборку (@ffmpeg/ffmpeg/dist/umd) использовать нельзя: её глобальное
+ * имя — FFmpegWASM, а не FFmpeg, и её воркер создаётся через
+ * new Worker(new URL(<publicPath>/814.ffmpeg.js)) на кросс-доменном CDN-URL,
+ * что браузер запрещает (SecurityError). ESM-сборка экспортирует FFmpeg и
+ * умеет classWorkerURL — воркер и ядро отдаём blob-URL (наследуют origin
+ * страницы), а ядро обязательно ESM: в UMD-ядре нет `export default`, который
+ * ждёт воркер, и загрузка падает с ERROR_IMPORT_FAILURE. */
+const FF_ESM = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
+const FF_WORKER = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js';
+const FF_CORE_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
 
 export function estimateSpeakDur(text) {
   const t = String(text || '');
@@ -197,9 +206,12 @@ function drawCaption(ctx, item, cam, C, project, settings) {
     return;
   }
 
-  // субтитры снизу
+  // субтитры снизу. biling: 'orig' — только оригинал, 'origtr' — оригинал
+  // + перевод, 'tr' — перевод (с оригиналом, если перевода нет).
   const show = biling === 'tr' ? (trText || mainText) : mainText;
-  const second = biling === 'tr' ? mainText : trText;
+  let second = '';
+  if (biling === 'tr') second = trText ? mainText : '';
+  else if (biling !== 'orig') second = trText;
   const lineH = Math.max(26, C.h * 0.055);
   const bandH = lineH * (second ? 2.1 : 1.25) + 26;
   ctx.fillStyle = 'rgba(0,0,0,0.55)';
@@ -513,44 +525,86 @@ function encodeWav(pcm, sr) {
 }
 
 export async function wavToMp3(wavBlob, onLog) {
-  const ffmpeg = await loadFFmpeg(onLog);
-  const input = new Uint8Array(await wavBlob.arrayBuffer());
-  await ffmpeg.writeFile('voice.wav', input);
-  await ffmpeg.exec(['-i', 'voice.wav', '-codec:a', 'libmp3lame', '-q:a', '4', 'voice.mp3']);
-  const data = await ffmpeg.readFile('voice.mp3');
-  return { blob: new Blob([data], { type: 'audio/mpeg' }), name: 'voice.mp3' };
+  return withFFmpeg(async () => {
+    const ffmpeg = await loadFFmpeg(onLog);
+    const input = new Uint8Array(await wavBlob.arrayBuffer());
+    await ffmpeg.writeFile('voice.wav', input);
+    await ffmpeg.exec(['-y', '-i', 'voice.wav', '-codec:a', 'libmp3lame', '-q:a', '4', 'voice.mp3']);
+    const data = await ffmpeg.readFile('voice.mp3');
+    await dropFFmpegFiles(ffmpeg, ['voice.wav', 'voice.mp3']);
+    return { blob: new Blob([data], { type: 'audio/mpeg' }), name: 'voice.mp3' };
+  });
 }
 
 export async function toMP4(webmBlob, onLog) {
-  const ffmpeg = await loadFFmpeg(onLog);
-  const input = new Uint8Array(await webmBlob.arrayBuffer());
-  await ffmpeg.writeFile('in.webm', input);
-  await ffmpeg.exec(['-y', '-i', 'in.webm', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', 'out.mp4']);
-  const data = await ffmpeg.readFile('out.mp4');
-  return { blob: new Blob([data], { type: 'video/mp4' }), name: 'video.mp4' };
+  return withFFmpeg(async () => {
+    const ffmpeg = await loadFFmpeg(onLog);
+    const input = new Uint8Array(await webmBlob.arrayBuffer());
+    await ffmpeg.writeFile('in.webm', input);
+    await ffmpeg.exec(['-y', '-i', 'in.webm', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', 'out.mp4']);
+    const data = await ffmpeg.readFile('out.mp4');
+    await dropFFmpegFiles(ffmpeg, ['in.webm', 'out.mp4']);
+    return { blob: new Blob([data], { type: 'video/mp4' }), name: 'video.mp4' };
+  });
 }
 
 export async function toGIF(webmBlob, onLog) {
-  const ffmpeg = await loadFFmpeg(onLog);
-  const input = new Uint8Array(await webmBlob.arrayBuffer());
-  await ffmpeg.writeFile('in.webm', input);
-  await ffmpeg.exec(['-y', '-i', 'in.webm', '-vf', 'fps=12,scale=480:-1:flags=lanczos', 'out.gif']);
-  const data = await ffmpeg.readFile('out.gif');
-  return { blob: new Blob([data], { type: 'image/gif' }), name: 'video.gif' };
+  return withFFmpeg(async () => {
+    const ffmpeg = await loadFFmpeg(onLog);
+    const input = new Uint8Array(await webmBlob.arrayBuffer());
+    await ffmpeg.writeFile('in.webm', input);
+    await ffmpeg.exec(['-y', '-i', 'in.webm', '-vf', 'fps=12,scale=480:-1:flags=lanczos', 'out.gif']);
+    const data = await ffmpeg.readFile('out.gif');
+    await dropFFmpegFiles(ffmpeg, ['in.webm', 'out.gif']);
+    return { blob: new Blob([data], { type: 'image/gif' }), name: 'video.gif' };
+  });
 }
 
+/* Снять файлы с ФС воркера: экземпляр переиспользуется между конвертациями,
+ * а видео на 100 МБ иначе копится в памяти до перезагрузки страницы. */
+async function dropFFmpegFiles(ffmpeg, names) {
+  for (const n of names) { try { await ffmpeg.deleteFile(n); } catch (e) { /* нечего удалять */ } }
+}
+
+let _ffmpeg = null;
+let _ffLog = null;
+/* Один экземпляр на страницу: ядро ~32 МБ, каждая пересозданная копия —
+ * это повторный парсинг wasm и лишние ~30 МБ памяти. */
 async function loadFFmpeg(onLog) {
-  if (!window.FFmpeg) {
-    const s = document.createElement('script');
-    s.src = FF_FFMPEG;
-    await new Promise((res, rej) => { s.onload = res; s.onerror = () => rej(new Error('ffmpeg.wasm не загрузился')); document.head.appendChild(s); });
+  _ffLog = onLog || null; // лог всегда идёт в последний вызвавший элемент
+  if (_ffmpeg) return _ffmpeg;
+  if (!loadFFmpeg._p) {
+    loadFFmpeg._p = (async () => {
+      const toBlobURL = async (url, mime) => {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error('ffmpeg: ' + url.split('/').pop() + ' → HTTP ' + r.status);
+        return URL.createObjectURL(new Blob([await r.blob()], { type: mime }));
+      };
+      _ffLog && _ffLog('загрузка ffmpeg-core (~32МБ)…');
+      const { FFmpeg } = await import(/* @vite-ignore */ FF_ESM);
+      if (typeof FFmpeg !== 'function') throw new Error('ffmpeg: в ESM-сборке нет экспорта FFmpeg');
+      const ffmpeg = new FFmpeg();
+      ffmpeg.on('log', ({ message }) => _ffLog && _ffLog(message));
+      ffmpeg.on('progress', ({ progress }) => _ffLog && _ffLog('mux ' + Math.round(progress * 100) + '%'));
+      await ffmpeg.load({
+        classWorkerURL: await toBlobURL(FF_WORKER, 'text/javascript'),
+        coreURL: await toBlobURL(FF_CORE_BASE + '/ffmpeg-core.js', 'text/javascript'),
+        wasmURL: await toBlobURL(FF_CORE_BASE + '/ffmpeg-core.wasm', 'application/wasm'),
+      });
+      return ffmpeg;
+    })().catch((e) => { loadFFmpeg._p = null; throw e; });
   }
-  const { FFmpeg } = window;
-  const ffmpeg = new FFmpeg();
-  ffmpeg.on('log', ({ message }) => onLog && onLog(message));
-  ffmpeg.on('progress', ({ progress }) => onLog && onLog('mux ' + Math.round(progress * 100) + '%'));
-  await ffmpeg.load({ coreURL: FF_CORE });
-  return ffmpeg;
+  _ffmpeg = await loadFFmpeg._p;
+  return _ffmpeg;
+}
+
+/* Конвертации выполняются строго по очереди: у воркера одна ФС, и два
+ * параллельных exec перемешивают in/out-файлы и портят результат. */
+let _ffQueue = Promise.resolve();
+function withFFmpeg(job) {
+  const run = _ffQueue.then(() => job(), () => job());
+  _ffQueue = run.then(() => {}, () => {});
+  return run;
 }
 
 export { fmtBytes, download };

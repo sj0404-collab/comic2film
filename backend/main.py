@@ -23,7 +23,7 @@ import httpx
 import psutil
 from fastapi import (
     FastAPI, WebSocket, WebSocketDisconnect, HTTPException,
-    Depends, UploadFile, File, Form, Request
+    Depends, UploadFile, File, Form, Request, Header
 )
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -63,7 +63,9 @@ async def validate_token(token: str) -> dict:
     TOKEN_CACHE[token] = user
     return user
 
-async def get_user(authorization: Optional[str] = None) -> dict:
+async def get_user(authorization: Optional[str] = Header(default=None)) -> dict:
+    # Именно Header: без него FastAPI трактует параметр как query-строку
+    # (?authorization=...) и любой запрос с заголовком Authorization получал 401.
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Missing Bearer token")
     return await validate_token(authorization[7:])

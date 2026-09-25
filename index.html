@@ -119,7 +119,7 @@
         <div id="chat-messages" class="chat-messages"></div>
         <div id="chat-empty" class="empty">Напишите что-нибудь или прикрепите файлы — ИИ ответит в контексте всей вашей работы.</div>
         <div class="row" style="gap:6px;margin-top:8px">
-          <label class="btn mini file">📎 Файлы<input type="file" id="chat-file" multiple hidden></label>
+          <label class="btn mini file">📎 Файлы<input type="file" id="chat-file" multiple></label>
           <textarea id="chat-input" class="flex1" rows="2" placeholder="Сообщение… (Enter — отправить, Shift+Enter — новая строка)"></textarea>
           <button id="btnChatSend" class="btn primary">➤</button>
         </div>
@@ -139,8 +139,8 @@
       <div class="card">
         <h2>Нарезки голосов</h2>
         <p class="muted">Загрузите аудио/видео — оно будет разрезано на фразы по тишине.</p>
-        <label class="btn mini file">+ Аудио/видео → нарезки<input type="file" id="clipFile" accept="audio/*,video/*" hidden></label>
-        <label class="btn mini file">🎙 Записать голос (микрофон)<input type="file" id="recFile" accept="audio/*" capture hidden></label>
+        <label class="btn mini file">+ Аудио/видео → нарезки<input type="file" id="clipFile" accept="audio/*,video/*"></label>
+        <label class="btn mini file">🎙 Записать голос (микрофон)<input type="file" id="recFile" accept="audio/*" capture></label>
         <div id="clips-grid" class="list"></div>
       </div>
     </section>
@@ -184,7 +184,7 @@
           <input type="range" id="opt-gap" min="0" max="1500" step="50" value="350">
           <span id="opt-gap-v" class="muted">0.35 c</span>
           <label>Фоновая музыка (необязательно)</label>
-          <label class="btn mini file">🎵 Выбрать файл<input type="file" id="opt-music" accept="audio/*" hidden></label>
+          <label class="btn mini file">🎵 Выбрать файл<input type="file" id="opt-music" accept="audio/*"></label>
           <label>Громкость музыки</label>
           <input type="range" id="opt-mvol" min="0" max="100" step="5" value="15">
           <span id="opt-mvol-v" class="muted">15%</span>
@@ -303,7 +303,7 @@
         <div class="row wrap">
           <button id="btnSave" class="btn">💾 Сохранить (IndexedDB)</button>
           <button id="btnExportJson" class="btn">⬇ Экспорт проекта</button>
-          <button id="btnImportJson" class="btn file">⬆ Импорт проекта<input type="file" id="jsonImport" accept=".json,.voicecomic" hidden></button>
+          <button id="btnImportJson" class="btn file">⬆ Импорт проекта<input type="file" id="jsonImport" accept=".json,.voicecomic"></button>
           <button id="btnReset" class="btn danger">Сбросить</button>
         </div>
         <p class="muted">Автосохранение включено. Установите приложение на главный экран

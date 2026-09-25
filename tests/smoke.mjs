@@ -198,5 +198,90 @@ ok(maxErr < 0.001, 'resampleLinear: значения близки к ориги�
     'sliceSegments сохраняет хвостовой сегмент');
 }
 
+/* ================================================================
+ * Регрессы на баги, найденные разбором репозитория.
+ * Каждый блок ловит конкретную поломку — иначе она вернётся молча.
+ * ================================================================ */
+
+/* [1] ffmpeg.wasm: UMD-сборка экспортирует глобал FFmpegWASM (не FFmpeg) и
+ * создаёт воркер на кросс-доменном URL, что браузер запрещает. Значит
+ * грузить можно только ESM через classWorkerURL (blob) + ESM-ядро. */
+{
+  const eng = fs.readFileSync(new URL('../js/engine.js', import.meta.url), 'utf8');
+  ok(!/https:\/\/[^'"\s]*\/umd\//.test(eng), 'engine.js: ни один ffmpeg-URL не указывает на dist/umd (UMD отдаёт FFmpegWASM и кросс-доменный воркер)');
+  ok(/classWorkerURL/.test(eng), 'engine.js: ffmpeg load() получает classWorkerURL (иначе Worker с CDN-URL бросает SecurityError)');
+  ok(!/window\.FFmpeg\b/.test(eng), 'engine.js: нет обращения к window.FFmpeg (в UMD такого глобала нет)');
+  ok(/import\([^)]*FF_ESM/.test(eng) || /import\(FF_ESM\)/.test(eng), 'engine.js: ESM-библиотека ffmpeg подключается динамическим import()');
+}
+
+/* [2] Файловые кнопки UI: атрибут hidden на <input type=file> даёт
+ * display:none из UA-стиля, и клик по кнопке/label невозможен. */
+{
+  const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../css/ui.css', import.meta.url), 'utf8');
+  const inputs = [...html.matchAll(/<input[^>]*type="file"[^>]*>/g)].map(m => m[0]);
+  const clickable = ['chat-file', 'clipFile', 'recFile', 'opt-music', 'jsonImport'];
+  ok(inputs.length === 6, 'index.html: все 6 файловых инпутов на месте');
+  ok(clickable.every(id => inputs.some(i => i.includes(`id="${id}"`) && !/\shidden/.test(i))),
+    'index.html: кликабельные файловые инпуты без hidden (иначе кнопка мертва)');
+  ok(/\.file input\[type=file\]/.test(css) && /label\.btn/.test(css),
+    'ui.css: .file-инпут перекрывает кнопку, label.btn выглядит как кнопка');
+}
+
+/* [3] Бэкенд: get_user обязан читать заголовок Authorization. Без Header()
+ * FastAPI трактует параметр как query и отдаёт 401 на любой запрос с токеном. */
+{
+  const py = fs.readFileSync(new URL('../backend/main.py', import.meta.url), 'utf8');
+  ok(/authorization:\s*Optional\[str\]\s*=\s*Header\(/.test(py),
+    'backend: токен читается из заголовка Authorization, а не из query-строки');
+  ok(!/async def get_user\(authorization:\s*Optional\[str\]\s*=\s*None\)/.test(py),
+    'backend: нет варианта get_user без Header() (это ломало авторизацию)');
+}
+
+/* [4] Двуязычные субтитры: режим «только основной текст» не должен рисовать
+ * перевод (раньше 'orig' и 'origtr' вели себя одинаково). */
+{
+  const cap = (biling, mainText, trText) => {
+    const show = biling === 'tr' ? (trText || mainText) : mainText;
+    let second = '';
+    if (biling === 'tr') second = trText ? mainText : '';
+    else if (biling !== 'orig') second = trText;
+    return [show, second].filter(Boolean);
+  };
+  ok(cap('orig', 'A', 'B').length === 1, 'субтитры: biling=orig рисует только оригинал');
+  ok(cap('origtr', 'A', 'B').join('|') === 'A|B', 'субтитры: biling=origtr рисует оригинал + перевод');
+  ok(cap('tr', 'A', 'B').join('|') === 'B|A', 'субтитры: biling=tr рисует перевод + оригинал');
+  ok(cap('tr', 'A', '').join('|') === 'A', 'субтитры: без перевода оригинал не дублируется');
+  ok(cap('origtr', 'A', '').join('|') === 'A', 'субтитры: biling=origtr без перевода = один оригинал');
+  const eng = fs.readFileSync(new URL('../js/engine.js', import.meta.url), 'utf8');
+  ok(/if \(biling === 'tr'\) second = trText \? mainText : '';/.test(eng), 'engine.js drawCaption: перевод не дублирует оригинал');
+  ok(/else if \(biling !== 'orig'\) second = trText;/.test(eng), 'engine.js drawCaption: режим orig не тянет перевод');
+}
+
+/* [5] Импорт проекта: страницы привязываются к загруженным (id, иначе
+ * порядок), непривязанные попадают в отчёт, уже озвученные реплики не
+ * теряются. */
+{
+  const app = fs.readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+  const imp = app.slice(app.indexOf('async function importProject'), app.indexOf('function resetAll'));
+  ok(/sameCount/.test(imp), 'app.js importProject: привязка страниц по порядку, если id не совпали');
+  ok(/НЕ привязано страниц/.test(imp), 'app.js importProject: непривязанные страницы попадают в отчёт');
+  ok(!/audio:\s*undefined\s*\}/.test(imp) && /old\.audio/.test(imp),
+    'app.js importProject: уже озвученные реплики не затираются');
+  ok(/function onFirstBind/.test(app) && /uiBound = true/.test(app),
+    'app.js: bindSettings() не вешает слушатели повторно (иначе дубли после импорта/сброса)');
+}
+
+/* [6] Сохранение: ошибки IndexedDB больше не глотаются — иначе тост
+ * «Сохранено» появлялся при потере проекта (например, QuotaExceeded). */
+{
+  const app = fs.readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+  const sv = app.slice(app.indexOf('async function saveToDB'), app.indexOf('/* ====', app.indexOf('async function saveToDB')));
+  ok(/if \(errs\.length\) throw new Error/.test(sv), 'app.js saveToDB: пробрасывает ошибку записи');
+  ok(/QuotaExceededError/.test(app), 'app.js: квота IndexedDB распознаётся и объясняется пользователю');
+  ok(!/try \{ await idbSet\(KEY_PROJECT[\s\S]{0,200}catch \(e\) \{\}/.test(sv),
+    'app.js saveToDB: пустой catch больше не глушит потерю данных');
+}
+
 console.log(fails ? `\n${fails} FAILURES` : '\nALL PASS');
 process.exit(fails ? 1 : 0);

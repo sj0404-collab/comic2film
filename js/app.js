@@ -144,18 +144,43 @@ function playBlob(blob) {
   audio.play().catch(release);
 }
 
-/* автосохранение */
+/* Автосохранение. Ошибку показываем один раз на серию неудач, иначе тост
+ * заспамит экран: раньше saveToDB глотал всё молча, и «Сохранено» появлялось
+ * даже при QuotaExceeded — то есть данные терялись без предупреждения. */
 const autoSaveTimer = (() => {
   let t = null;
-  return () => { clearTimeout(t); t = setTimeout(saveToDB, 600); };
+  let warned = false;
+  return () => {
+    clearTimeout(t);
+    t = setTimeout(async () => {
+      try {
+        await saveToDB();
+        warned = false;
+      } catch (e) {
+        if (!warned) { warned = true; toast('Автосохранение: ' + e.message, 'err'); }
+      }
+    }, 600);
+  };
 })();
+
+/* Человеческое описание ошибки IndexedDB (квота, приватный режим и т.п.) */
+function saveErrText(e) {
+  const msg = String((e && e.message) || e || '');
+  if ((e && e.name) === 'QuotaExceededError' || /quota/i.test(msg)) {
+    return 'не хватило места в хранилище браузера. Выгрузите проект в JSON и удалите лишние страницы/нарезки';
+  }
+  return msg || 'неизвестная ошибка записи';
+}
+
 async function saveToDB() {
-  try { await idbSet(KEY_SETTINGS, settings); } catch (e) {}
+  const errs = [];
+  try { await idbSet(KEY_SETTINGS, settings); } catch (e) { errs.push('настройки — ' + saveErrText(e)); }
   try {
     const store = structuredClone(project);
     store.pages.forEach(p => delete p.url);
     await idbSet(KEY_PROJECT, store);
-  } catch (e) {}
+  } catch (e) { errs.push('проект — ' + saveErrText(e)); }
+  if (errs.length) throw new Error(errs.join('; '));
 }
 
 /* ================================================================
@@ -867,6 +892,15 @@ async function doAudioOnly() {
 /* ================================================================
  * Настройки: поля и проект
  * ================================================================ */
+/* Слушатели полей настроек вешаются ровно один раз за сессию: bindSettings()
+ * зовётся повторно при импорте проекта и при сбросе, и без этого га каждый
+ * обработчик дублировался (значение менялось N раз, ререндер шёл N раз). */
+let uiBound = false;
+function onFirstBind(node, type, fn) {
+  if (uiBound || !node) return;
+  node.addEventListener(type, fn);
+}
+
 function bindSettings() {
   populateProviderSelect();
   populateOcrSelect();
@@ -890,20 +924,23 @@ function bindSettings() {
   bindRange('opt-fps', 'opt-fps-v', (v) => settings.fps = +v, 'fps');
   bindRange('opt-gap', 'opt-gap-v', (v) => settings.gap = +v, (v) => (v / 1000).toFixed(2) + ' c');
   bindRange('opt-mvol', 'opt-mvol-v', (v) => settings.mvol = +v, (v) => v + '%');
-  $('opt-music').addEventListener('change', (e) => {
+  onFirstBind($('opt-music'), 'change', (e) => {
     if (!e.target.files.length) return;
     const f = e.target.files[0];
     settings.musicBlob = f;
     settings.musicUrl = URL.createObjectURL(f);
+    renderMusicLabel();
     toast('Музыка: ' + f.name);
+    autoSaveTimer();
   });
+  uiBound = true;
 }
 
 function bindSel(id) {
   const elEl = $(id);
   const key = id.replace(/^opt-/, '');
   elEl.value = settings[key] != null ? settings[key] : '';
-  elEl.addEventListener('change', () => {
+  onFirstBind(elEl, 'change', () => {
     settings[key] = elEl.value;
     if (key === 'ai') {
       const p = provider(settings.ai);
@@ -974,7 +1011,7 @@ function setupModelUi() {
   modelsuiSetSettings(() => settings);
   renderModelCurrent();
   custom.dataset.typed = '0';
-  $('btnPickModel').addEventListener('click', () => {
+  onFirstBind($('btnPickModel'), 'click', () => {
     openModelPicker({
       settings,
       onSelect: (pid, mid) => {
@@ -992,7 +1029,7 @@ function setupModelUi() {
       },
     });
   });
-  custom.addEventListener('input', () => { settings.aimodel = custom.value; custom.dataset.typed = '1'; renderModelCurrent(); autoSaveTimer(); });
+  onFirstBind(custom, 'input', () => { settings.aimodel = custom.value; custom.dataset.typed = '1'; renderModelCurrent(); autoSaveTimer(); });
 }
 
 /* Текущая выбранная модель: подпись на кнопке и подсказка. */
@@ -1031,7 +1068,7 @@ function bindInp(id) {
   const elEl = $(id);
   const key = id.replace(/^opt-/, '');
   elEl.value = settings[key] != null ? settings[key] : '';
-  elEl.addEventListener('input', () => { settings[key] = elEl.value; autoSaveTimer(); });
+  onFirstBind(elEl, 'input', () => { settings[key] = elEl.value; autoSaveTimer(); });
 }
 function bindRange(id, labelId, apply, fmt) {
   const elEl = $(id);
@@ -1039,7 +1076,7 @@ function bindRange(id, labelId, apply, fmt) {
   const lbl = $(labelId);
   const raw = elEl.value;
   lbl.textContent = typeof fmt === 'function' ? fmt(raw) : raw + ' ' + fmt;
-  elEl.addEventListener('input', () => {
+  onFirstBind(elEl, 'input', () => {
     apply(elEl.value);
     const v = elEl.value;
     lbl.textContent = typeof fmt === 'function' ? fmt(v) : v + ' ' + fmt;
@@ -1166,24 +1203,62 @@ function exportProject() {
   toast('Экспортирован сценарий без звука/страниц — файлы импортируйте отдельно');
 }
 
+/* Импорт проекта. Экспорт не хранит картинки страниц и звук нарезок, поэтому
+ * страницы привязываются к уже загруженным (сначала по id, затем по порядку —
+ * чтобы текст восстановился после повторной загрузки исходника), а всё, что
+ * привязать не удалось, честно попадает в отчёт, а не в молчание. */
 async function importProject(file) {
   try {
     const j = JSON.parse(await file.text());
     if (!j.project) throw new Error('Файл не похож на проект VoiceComic');
     settings = Object.assign(defaultSettings(), j.settings || {});
     const imp = j.project;
-    if (Array.isArray(imp.roles) && imp.roles.length) project.roles = imp.roles;
-    if (Array.isArray(imp.pages)) {
-      (imp.pages).forEach(ip => {
-        const own = project.pages.find(p => p.id === ip.id);
-        if (own) {
-          own.w = ip.w; own.h = ip.h;
-          own.bubbles = (ip.bubbles || []).map(b => ({ ...b, audio: undefined }));
-        }
+    const parts = [];
+
+    const rolesN = Array.isArray(imp.roles) ? imp.roles.length : 0;
+    if (rolesN) project.roles = imp.roles;
+    if (imp.kind === 'pages' || imp.kind === 'clips') project.kind = imp.kind;
+
+    const impPages = Array.isArray(imp.pages) ? imp.pages : [];
+    let matched = 0, missing = 0, voices = 0, lines = 0;
+    if (impPages.length) {
+      const byId = new Map(project.pages.map(p => [p.id, p]));
+      const sameCount = project.pages.length === impPages.length;
+      const used = new Set();
+      impPages.forEach((ip, i) => {
+        let own = byId.get(ip.id);
+        if (own && used.has(own.id)) own = null;
+        if (!own && sameCount && !used.has(project.pages[i].id)) own = project.pages[i];
+        if (!own) { missing++; return; }
+        used.add(own.id);
+        own.w = ip.w || own.w;
+        own.h = ip.h || own.h;
+        own.name = ip.name || own.name || '';
+        const prev = new Map((own.bubbles || []).map(b => [b.id, b]));
+        own.bubbles = (ip.bubbles || []).map(b => {
+          const old = prev.get(b.id);
+          if (old && old.audio && old.audio.blob) voices++;
+          lines++;
+          return { ...b, audio: old ? old.audio : undefined };
+        });
+        matched++;
       });
+      if (matched) parts.push(`страниц: ${matched}/${impPages.length} (реплик: ${lines}${voices ? ', сохранено озвучки: ' + voices : ''})`);
+      if (missing) parts.push(`НЕ привязано страниц: ${missing} — загрузите исходный файл (PDF/CBZ/картинки) и импортируйте проект ещё раз`);
+    } else {
+      parts.push('в файле нет страниц');
     }
-    bindSettings(); syncModelUi(); syncProviderUi(); renderAll();
-    toast('Проект импортирован: роли и тексты восстановлены');
+
+    const impClips = Array.isArray(imp.clips) ? imp.clips : [];
+    if (impClips.length) {
+      const local = new Set((project.clips || []).map(c => c.id));
+      const have = impClips.filter(c => local.has(c.id)).length;
+      parts.push(`нарезок: ${have}/${impClips.length}` + (have < impClips.length ? ' (остальные загрузите заново)' : ''));
+    }
+
+    bindSettings(); syncModelUi(); syncProviderUi(); renderAll(); autoSaveTimer();
+    if (rolesN) parts.unshift('ролей: ' + rolesN);
+    toast('Импорт: ' + (parts.length ? parts.join(' · ') : 'пусто'), missing ? 'err' : 'ok');
   } catch (e) { toast('Импорт: ' + e.message, 'err'); }
 }
 
