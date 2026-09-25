@@ -131,9 +131,15 @@
     <section id="tab-roles" class="tab">
       <div class="card">
         <div class="row head"><h2>3 · Труппа / голоса</h2>
-          <button id="btnAddRole" class="btn mini">+ Персонаж</button></div>
-        <p class="muted">Каждому персонажу — голос Edge-TTS с интонацией (высота, темп, громкость)
-          или свой голосовой клип.</p>
+          <div class="row" style="gap:6px">
+            <button id="btnAutoCast" class="btn mini" title="Подобрать каждому персонажу свой голос по полу и языку">🎭 Подобрать голоса</button>
+            <button id="btnAddRole" class="btn mini">+ Персонаж</button>
+          </div></div>
+        <p class="muted">Каждому персонажу — свой голос Edge-TTS с интонацией (высота, темп,
+          громкость) или собственный голосовой клип. «Подобрать голоса» расставит голоса с учётом
+          пола и языка, не трогая те, что вы выбрали вручную; «+ Персонаж» — добавить нового.
+          Если герой озвучен нарезками, ниже появится раздача нарезок по его репликам —
+          с прослушиванием и ручной привязкой.</p>
         <div id="roles-list" class="list"></div>
       </div>
       <div class="card">

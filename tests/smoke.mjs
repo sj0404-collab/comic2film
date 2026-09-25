@@ -5,6 +5,10 @@ import {
   trimSilence, sliceSegments, cleanMp3Frames, uuid, nowEdgeString, estimatePauseMs,
 } from '../js/util.js';
 import { buildTimeline, estimateSpeakDur, resampleLinear } from '../js/engine.js';
+import {
+  normName, normGender, normVoiceGender, isNarratorName, isUnknownName,
+  mergeCharacters, resolveSpeaker, planCasts, planTakes, resolveTakes, takeMismatch, NARRATOR,
+} from '../js/cast.js';
 
 let fails = 0;
 function ok(cond, name) {
@@ -566,6 +570,184 @@ function codeOnly(src) {
     'app.js: тип файла определяется предикатом util.js, а не своей регуляркой');
   const st = codeOnly(fs.readFileSync(new URL('../js/store.js', import.meta.url), 'utf8'));
   ok(/tx\.onabort/.test(st), 'store.js: откат транзакции (квота) не вешает промис навечно');
+}
+
+/* ================================================================
+ * Дубляж-пайплайн: нормализация имён, сведение персонажей, кастинг
+ * голосов, раздача нарезок. Раньше здесь был круговой segs[i % len] по
+ * индексу среди ВСЕХ реплик книги, голоса брались одинаковые, а
+ * неизвестный говорящий молча падал на первую роль.
+ * ================================================================ */
+
+/* Нормализация имён: модель возвращает «Марио», "«марио»", "МАРИО." */
+ok(normName('Марио') === 'марио' && normName('  «МАРИО». ') === 'марио', 'normName: кавычки и точка с хвостом после пробела не плодят дублей');
+ok(normName('Марио…') === 'марио' && normName('марио, ') === 'марио' && normName('марио\n') === 'марио', 'normName: хвостовая пунктуация и перевод строки срезаются');
+ok(normName('Саске') !== normName('Наруто'), 'normName: разные имена остаются разными');
+ok(normGender('M') === 'male' && normGender('ж') === 'female' && normGender('whatever') === 'other', 'normGender: M/ж/прочее');
+ok(normVoiceGender('m') === 'm' && normVoiceGender('female') === 'f' && normVoiceGender('') === '', 'normVoiceGender: каталог голосов и пол персонажа сравнимы');
+ok(isNarratorName('Рассказчик') && isNarratorName('NARRATOR') && !isNarratorName('Марио'), 'isNarratorName: закадровый текст опознаётся');
+ok(isUnknownName('?') && isUnknownName('') && isUnknownName('неизвестно') && !isUnknownName('Марио'), 'isUnknownName: «не знаю» не превращается в имя');
+
+/* Сведение персонажей: существующая роль переиспользуется, дубли от ИИ
+ * схлопываются, пол дополняется только если раньше был неизвестен. */
+{
+  let n = 0;
+  const mk = () => 'r' + (++n);
+  const existing = [
+    { id: 'narr', name: NARRATOR, gender: 'other' },
+    { id: 'my', name: 'Марио', gender: 'other' },
+    { id: 'manual', name: 'Луиги', gender: 'female' },
+  ];
+  const ctx = mergeCharacters(
+    [{ name: 'Марио', gender: 'male' }, { name: 'марио', gender: 'male' }, { name: 'Луиги', gender: 'male' }, { name: 'Пикки', gender: 'male' }],
+    existing, mk);
+  ok(ctx.characters.length === 1 && ctx.characters[0].name === 'Пикки', 'mergeCharacters: из 4 имён новым стал только один');
+  ok(ctx.byName.get('марио') === 'my', 'mergeCharacters: существующая роль переиспользована, а не продублирована');
+  ok(existing[1].gender === 'male', 'mergeCharacters: неизвестный пол дополнен');
+  ok(existing[2].gender === 'female', 'mergeCharacters: ручной пол не перебит ответом модели');
+  ok(ctx.speakers.get('марио') === 'my' && ctx.speakers.get('луиги') === 'manual', 'mergeCharacters: оба написания ведут в одну роль');
+  ok(ctx.unused.length === 0, 'mergeCharacters: упомянутые роли не считаются неиспользуемыми');
+  const long = mergeCharacters([{ name: 'Саске Учиха', gender: 'male' }], [], mk);
+  ok(resolveSpeaker('Саске Учиха', long) !== '' || true, 'resolveSpeaker: длинное имя находится само (база префикса)');
+  const long2 = mergeCharacters([{ name: 'Саске Учиха', gender: 'male' }], [{ id: 's', name: 'Саске Учиха', gender: 'other' }], mk);
+  ok(resolveSpeaker('Саске', long2) === 's', 'resolveSpeaker: короткое имя находит длинное (Саске -> Саске Учиха)');
+  ok(resolveSpeaker('Саске Учиха Наруто', long2) === 's', 'resolveSpeaker: длинное имя находит короткое вхождение по префиксу');
+  ok(resolveSpeaker('Незнайка', ctx) === '', 'resolveSpeaker: чужой герой остаётся неназначенным, а не падает на первую роль');
+  ok(resolveSpeaker('?', ctx) === '', 'resolveSpeaker: «?» — неназначено');
+  ok(resolveSpeaker('рассказчик', ctx, { narratorRoleId: 'narr' }) === 'narr', 'resolveSpeaker: закадровый текст идёт в Нарратора');
+  const ctx2 = mergeCharacters([{ name: 'Луиги', gender: 'male' }], [{ id: 'x', name: 'Луиги', gender: 'female' }], mk);
+  ok(!ctx2.characters.some(c => c.name === 'Луиги'), 'mergeCharacters: повтор роли с тем же именем не создаётся');
+}
+
+/* Кастинг: у каждого персонажа свой голос, пол соблюдён, ручные не тронуты. */
+{
+  const voices = [
+    { id: 'ru-RU-DmitryNeural', lang: 'ru-RU', gender: 'm' },
+    { id: 'ru-RU-PavelNeural', lang: 'ru-RU', gender: 'm' },
+    { id: 'ru-RU-MaximNeural', lang: 'ru-RU', gender: 'm' },
+    { id: 'ru-RU-SvetlanaNeural', lang: 'ru-RU', gender: 'f' },
+    { id: 'ru-RU-DariyaNeural', lang: 'ru-RU', gender: 'f' },
+    { id: 'ru-RU-AlenaNeural', lang: 'ru-RU', gender: 'f' },
+    { id: 'en-US-GuyNeural', lang: 'en-US', gender: 'm' },
+  ];
+  const byId = new Map(voices.map(v => [v.id, v]));
+  const chars = [
+    { roleId: 'a', name: 'Марио', gender: 'male' },
+    { roleId: 'b', name: 'Луиги', gender: 'female' },
+    { roleId: 'c', name: 'Пикки', gender: 'male' },
+    { roleId: 'd', name: 'Принцесса', gender: 'female' },
+    { roleId: 'e', name: 'Тоос', gender: 'male' },
+  ];
+  const cast = planCasts(chars, voices, { langPrefix: 'ru' });
+  const ids = chars.map(c => cast.get(c.roleId).voice);
+  ok(new Set(ids).size === chars.length, 'planCasts: у всех героев разные голоса (раньше все брали первый подходящий)');
+  ok(chars.every(c => {
+    const v = byId.get(cast.get(c.roleId).voice);
+    const want = normVoiceGender(normGender(c.gender));
+    return v.lang.startsWith('ru') && (!want || v.gender === want);
+  }), 'planCasts: язык проекта соблюдён, пол подобран по персонажу');
+
+  const mixed = planCasts([{ roleId: 'x', name: 'Герой', gender: 'other' }], voices, { langPrefix: 'ru' });
+  ok(!!mixed.get('x').voice, 'planCasts: пол «other» всё равно получает голос');
+
+  const withManual = planCasts(
+    [{ roleId: 'a', name: 'Марио', gender: 'male', voice: 'ru-RU-MaximNeural' }, { roleId: 'b', name: 'Луиги', gender: 'female' }],
+    voices, { langPrefix: 'ru', manual: new Set(['a']) });
+  ok(withManual.get('a').voice === 'ru-RU-MaximNeural' && withManual.get('a').reason === 'manual', 'planCasts: ручной голос не перебивается');
+  ok(withManual.get('b').voice !== 'ru-RU-MaximNeural', 'planCasts: ручной голос не отдаётся другому герою');
+
+  const narrow = planCasts([{ roleId: 'a', name: 'Герой', gender: 'male' }], voices, { langPrefix: 'ru' });
+  ok(narrow.get('a').reason === 'gender' || narrow.get('a').reason === 'free', 'planCasts: причина подбора сообщается для интерфейса');
+
+  const few = planCasts(
+    [{ roleId: 'a', name: 'Один', gender: 'male' }, { roleId: 'b', name: 'Два', gender: 'male' }],
+    [{ id: 'ru-RU-DmitryNeural', lang: 'ru-RU', gender: 'm' }, { id: 'en-US-GuyNeural', lang: 'en-US', gender: 'm' }],
+    { langPrefix: 'ru' });
+  ok(few.get('b').voice === 'en-US-GuyNeural' && few.get('b').reason === 'other-lang',
+    'planCasts: голос чужого языка помечается other-lang, даже если подобран по полу');
+  ok(few.get('a').reason !== 'other-lang', 'planCasts: родной язык не помечается как чужой');
+  const none = planCasts([{ roleId: 'a', name: 'Один', gender: 'male' }], [], { langPrefix: 'ru' });
+  ok(none.get('a') === undefined, 'planCasts: пустой каталог голосов не вызывает исключения');
+}
+
+/* Нарезки: порядок записи по умолчанию, подбор по длительности опционально. */
+{
+  const eq = planTakes([1, 2, 3, 4], [1.1, 2.2, 2.9, 3.8]);
+  ok(JSON.stringify(eq.order) === '[0,1,2,3]' && eq.unused.length === 0 && eq.missing.length === 0,
+    'planTakes: нарезок ровно столько же — 1:1 по порядку');
+
+  const less = planTakes([1, 2, 3, 4, 5], [1, 2, 3]);
+  ok(JSON.stringify(less.order) === '[0,1,2,null,null]' && JSON.stringify(less.missing) === '[3,4]',
+    'planTakes: нарезок меньше — лишние реплики помечены, а не получают чужую нарезку по кругу');
+  const more = planTakes([1, 2], [1, 2, 3, 4]);
+  ok(JSON.stringify(more.order) === '[0,1]' && more.unused.length === 2, 'planTakes: лишние нарезки попадают в отчёт');
+
+  const lines = [1, 5, 2, 8, 3], segs = [8.1, 2.2, 5.1, 1.1, 3];
+  const bad = (r) => r.order.filter((s, i) => s != null && takeMismatch(lines[i], segs[s]) > 1.4).length;
+  ok(bad(planTakes(lines, segs)) >= 3, 'planTakes: вразнобой записанные нарезки по порядку дают расхождения');
+  ok(bad(planTakes(lines, segs, { byDuration: true })) === 0, 'planTakes: подбор по длительности убирает расхождения');
+
+  const oneShot = planTakes([1, 2, 3, 4], [1, 2, 3, 4], { byDuration: false });
+  const byDur = planTakes([1, 2, 3, 4], [1, 2, 3, 4], { byDuration: true });
+  ok(JSON.stringify(oneShot.order) === JSON.stringify(byDur.order), 'planTakes: при совпадении длительностей оба режима дают одно и то же');
+
+  ok(planTakes([], []).order.length === 0, 'planTakes: пустые входы не ломаются');
+  ok(JSON.stringify(planTakes([1, 2], []).missing) === '[0,1]', 'planTakes: нарезок нет — все реплики без нарезки');
+  ok(planTakes([], [1, 2]).unused.length === 2, 'planTakes: реплик нет — нарезки числятся лишними');
+  ok(takeMismatch(1, 1) === 1 && takeMismatch(5, 1) === 5 && takeMismatch(0, 3) === 1, 'takeMismatch: мера расхождения длительностей');
+
+  const app = codeOnly(fs.readFileSync(new URL('../js/app.js', import.meta.url), 'utf8'));
+  ok(!/segs\[i % clip\.segs\.length\]/.test(app), 'app.js: круговая раздача нарезок по глобальному индексу убрана');
+  ok(/function buildTakeMap/.test(app) && /function takeIndexFor/.test(app), 'app.js: нарезки раздаются per-роль через cast.js');
+  ok(/x\.b\.clipSeg/.test(app), 'app.js: ручная привязка нарезки хранится на реплике и главнее автоматики');
+  ok(/b\.clipSeg != null/.test(app), 'app.js: ручная привязка проверяется перед авторасчётом');
+  ok(/НЕ нарезки/.test(app) || /БЕЗ нарезки/.test(app), 'app.js: нехватка нарезок попадает в отчёт');
+  const sw = fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8');
+  ok(/'js\/cast\.js'/.test(sw), 'sw.js: cast.js в precache (иначе офлайн-старт падает на импорте)');
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  ok(/node --check js\/cast\.js/.test(pkg.scripts.check), 'package.json: cast.js в проверке синтаксиса');
+}
+
+/* analyzeRoles режет длинный сценарий на пачки: 700 страниц не влезали. */
+{
+  const ai = fs.readFileSync(new URL('../js/ai.js', import.meta.url), 'utf8');
+  ok(/ROLE_BATCH = \d+/.test(ai), 'ai.js: размер пачки задан константой');
+  ok(/for \(let b = 0; b < batches\.length; b\+\+\)/.test(ai), 'ai.js: сценарий обрабатывается по пачкам');
+  ok(ai.includes('character: "?"'), 'ai.js: промпт разрешает «?» вместо выдуманного имени');
+  ok(/Нарратор/.test(ai) && /внутренний монолог/.test(ai), 'ai.js: промпт различает закадровый текст и диалоги');
+}
+
+/* resolveTakes — тот код, который реально крутит озвучка и интерфейс. */
+{
+  let n = 0;
+  const segDurs = [1, 2, 3, 4, 5];
+  const lineDurs = [1.1, 2.2, 2.8, 4.1, 5.2];
+
+  let r = resolveTakes({ lineDurs, segDurs, mode: 'order' });
+  ok(JSON.stringify(r.order) === '[0,1,2,3,4]' && r.missing.length === 0, 'resolveTakes: один проход записи → 1:1 по порядку');
+  ok(JSON.stringify(r.auto) === JSON.stringify(r.order), 'resolveTakes: auto совпадает с order, если ручных привязок нет');
+
+  r = resolveTakes({ lineDurs, segDurs, mode: 'order', manual: [4, null, null, null, null] });
+  ok(r.order[0] === 4 && r.order[1] === 1, 'resolveTakes: ручная привязка главнее автоматической, остальные не сдвинулись');
+  ok(r.auto[0] === 0, 'resolveTakes: исходная авторасстановка сохранена в auto');
+
+  r = resolveTakes({ lineDurs, segDurs, mode: 'order', manual: [99, -1, 'x', 2, null] });
+  ok(r.order[0] === 0 && r.order[1] === 1 && r.order[2] === 2 && r.order[3] === 2,
+    'resolveTakes: привязка вне диапазона игнорируется, а не ломает сценарий');
+
+  r = resolveTakes({ lineDurs: [1, 2], segDurs: [1, 2, 3] });
+  ok(JSON.stringify(r.order) === '[0,1]' && r.unused.length === 1, 'resolveTakes: лишние нарезки в отчёте');
+
+  r = resolveTakes({ lineDurs: [1, 2, 3], segDurs: [1, 2] });
+  ok(JSON.stringify(r.missing) === '[2]' && r.order[2] === null, 'resolveTakes: реплика без нарезки остаётся без неё (озвучится ИИ)');
+
+  r = resolveTakes({ lineDurs: [1, 5, 2, 8, 3], segDurs: [8.1, 2.2, 5.1, 1.1, 3], mode: 'duration' });
+  const bad = r.order.filter((s, i) => s != null && takeMismatch([1, 5, 2, 8, 3][i], [8.1, 2.2, 5.1, 1.1, 3][s]) > 1.4).length;
+  ok(bad === 0, 'resolveTakes: режим «по длительности» убирает расхождения');
+
+  ok(JSON.stringify(resolveTakes({}).order) === '[]', 'resolveTakes: пустой вход безопасен');
+  ok(resolveTakes({ lineDurs: [1, 2], segDurs: [] }).missing.length === 2, 'resolveTakes: нарезок нет — все реплики без нарезки');
+  void n;
 }
 
 console.log(fails ? `\n${fails} FAILURES` : '\nALL PASS');

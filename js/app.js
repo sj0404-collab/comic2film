@@ -14,8 +14,12 @@ import {
   synthesizeLine, voicesForLang, allVoices, fetchVoicesFromMicrosoft,
 } from './voices.js';
 import {
-  renderAndRecord, renderAudioTrack, previewStart, resolveCanvas, toMP4, toGIF, wavToMp3, measureTrimmedDuration,
+  renderAndRecord, renderAudioTrack, previewStart, resolveCanvas, toMP4, toGIF, wavToMp3, measureTrimmedDuration, estimateSpeakDur,
 } from './engine.js';
+import {
+  normGender, isNarratorName, mergeCharacters, resolveSpeaker,
+  planCasts, resolveTakes, takeMismatch, NARRATOR, CAST_REASON,
+} from './cast.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -457,45 +461,141 @@ async function ocrAll(goToScript) {
 /* ================================================================
  * Роли / перевод / озвучка
  * ================================================================ */
+
+/* Роль «Нарратор» всегда существует: закадровый текст есть почти в каждой
+ * манге, и раньше он попадал на первую попавшуюся роль. */
+function narratorRole() {
+  let r = project.roles.find(x => isNarratorName(x.name));
+  if (!r) {
+    r = {
+      id: uuid(), name: NARRATOR, emoji: '📖', color: ROLE_COLORS[project.roles.length % ROLE_COLORS.length],
+      voice: '', pitch: '+0Hz', rate: '+0%', volume: '+0%', style: '', type: 'edge', clipId: '',
+      gender: 'other', manualVoice: false,
+    };
+    project.roles.unshift(r);
+  }
+  return r;
+}
+
+/* Голоса проекта в каноническом виде для cast.js */
+function castVoices() {
+  return allVoices().map(v => ({ id: v.id, lang: v.lang, gender: v.gender }));
+}
+
+/**
+ * Раздать роли по репликам.
+ * Логика: ответ ИИ сводится к существующим персонажам (без дублей),
+ * каждому подбирается СВОЙ голос, неизвестные говорящие остаются
+ * неназначенными и попадают в отчёт, а не раскидываются по первой роли.
+ */
 async function aiRoles() {
-  const bubbles = allBubbles();
+  const bubbles = allBubbles().filter(x => x.b.text.trim());
   if (!bubbles.length) { toast('Сначала получите текст (OCR)', 'err'); return; }
-  if (!bubbles.some(x => x.b.text.trim())) { toast('Реплики пусты', 'err'); return; }
   $('imp-progress').classList.remove('hidden');
-  setProgress(0.1, 'ИИ думает о персонажах…');
+  setProgress(0.05, 'ИИ определяет говорящих…');
   try {
     const lines = bubbles.map((x, idx) => ({ idx, page: x.pi, text: x.b.text || '' }));
-    const r = await analyzeRoles(settings, lines);
+    const langName = { rus: 'русский', eng: 'английский', chi_sim: 'китайский', jpn: 'японский', kor: 'корейский' }[settings.lang] || '';
+    const r = await analyzeRoles(settings, lines, { langName });
     if (!r) throw new Error('ИИ не вернул роли');
-    const genderMap = new Map((r.roles || []).map(x => [x.name, x.gender || 'other']));
-    const roleIds = new Map();
-    for (const rw of r.roles || []) {
-      const name = (rw.name || '').trim() || 'Персонаж';
-      let role = project.roles.find(x => x.name === name);
-      if (!role) {
-        const gender = genderMap.get(name) || 'other';
-        const pool = voicesForLang(LANG_LOCALE[settings.lang] || 'ru');
-        role = {
-          id: uuid(), name, emoji: EMO_GENDER[gender] || '🧑',
-          color: ROLE_COLORS[project.roles.length % ROLE_COLORS.length],
-          voice: (pool.find(v => (v.gender || 'm') === (gender === 'male' ? 'm' : 'f')) || pool[0] || allVoices()[0]).id,
-          pitch: '+0Hz', rate: '+0%', volume: '+0%', style: '', type: 'edge', clipId: '',
-        };
-        project.roles.push(role);
-      }
-      roleIds.set(name, role.id);
+
+    const narr = narratorRole();
+    const ctx = mergeCharacters(r.characters, project.roles, uuid);
+
+    // применяем к проекту: новые роли и уточнённый пол
+    for (const c of ctx.characters) {
+      if (!c.isNew) continue;
+      project.roles.push({
+        id: c.id, name: c.name, emoji: EMO_GENDER[c.gender] || '🧑',
+        color: ROLE_COLORS[project.roles.length % ROLE_COLORS.length],
+        voice: '', gender: c.gender, manualVoice: false,
+        pitch: '+0Hz', rate: '+0%', volume: '+0%', style: '', type: 'edge', clipId: '',
+      });
     }
-    for (const it of (r.items || [])) {
+    // синхронизируем эмодзи с уточнённым полом
+    for (const c of ctx.characters) {
+      const role = roleById(c.id);
+      if (role && normGender(role.gender) !== 'other') role.emoji = EMO_GENDER[normGender(role.gender)] || role.emoji;
+    }
+
+    // назначаем репликам: неизвестный говорящий остаётся неназначенным
+    let assigned = 0, unnamed = 0;
+    const touched = new Set();
+    for (const it of r.items) {
       const bubble = bubbles[it.idx];
-      if (bubble) bubble.b.roleId = roleIds.get(it.character) || roleIds.values().next().value || '';
+      if (!bubble) continue;
+      touched.add(it.idx);
+      const roleId = resolveSpeaker(it.character, ctx, { narratorRoleId: narr.id });
+      if (roleId) { bubble.b.roleId = roleId; assigned++; } else unnamed++;
     }
+    // реплики, до которых модель не дошла, — тоже считаем неназначенными
+    for (let i = 0; i < bubbles.length; i++) if (!touched.has(i)) unnamed++;
+
+    // подбор голосов: у каждого персонажа свой, ручные не трогаем
+    const chars = project.roles.map(role => ({
+      roleId: role.id, name: role.name, gender: role.gender, voice: role.voice,
+    }));
+    const manual = new Set(project.roles.filter(x => x.manualVoice || x.voice).map(x => x.id));
+    const cast = planCasts(chars, castVoices(), {
+      langPrefix: LANG_LOCALE[settings.lang] || 'ru',
+      manual,
+      narratorRoleId: narr.id,
+    });
+    let reused = 0, otherLang = 0;
+    for (const [roleId, res] of cast) {
+      const role = roleById(roleId);
+      if (!role || role.manualVoice) continue;
+      if (res.voice) role.voice = res.voice;
+      role.castReason = res.reason;
+      if (res.reason === 'reused') reused++;
+      if (res.reason === 'other-lang') otherLang++;
+    }
+
     renderRoles(); renderScript(); scriptStatus(); autoSaveTimer();
-    toast('Роли раскиданы');
+    const parts = ['персонажей: ' + ctx.characters.length, 'реплик назначено: ' + assigned];
+    if (unnamed) parts.push('БЕЗ РОЛИ: ' + unnamed + ' (разметьте вручную на вкладке «Сценарий»)');
+    if (reused) parts.push('голосов не хватило — ' + reused + ' персонажей с общим голосом');
+    if (otherLang) parts.push(otherLang + ' персонажей получили голос другого языка');
+    if (r.batches > 1) parts.push('пачек: ' + r.batches);
+    if (ctx.unused.length) parts.push('лишних ролей в проекте: ' + ctx.unused.length);
+    toast('Роли: ' + parts.join(' · '), (unnamed || reused) ? 'err' : 'ok');
   } catch (e) {
     console.error(e);
     toast('Роли: ' + e.message, 'err');
   }
   $('imp-progress').classList.add('hidden');
+  setProgress(0);
+}
+
+/* Пересобрать голоса под текущий состав персонажей (кнопка «🎭 Подобрать голоса»). */
+function autoCast({ force = false } = {}) {
+  const chars = project.roles.map(role => ({
+    roleId: role.id, name: role.name, gender: role.gender, voice: force ? '' : role.voice,
+  }));
+  const narr = project.roles.find(x => isNarratorName(x.name));
+  const manual = new Set(project.roles.filter(x => x.manualVoice || (!force && x.voice)).map(x => x.id));
+  const cast = planCasts(chars, castVoices(), {
+    langPrefix: LANG_LOCALE[settings.lang] || 'ru',
+    manual,
+    narratorRoleId: narr ? narr.id : '',
+  });
+  let changed = 0, reused = 0, otherLang = 0;
+  for (const [roleId, res] of cast) {
+    const role = roleById(roleId);
+    if (!role) continue;
+    if (res.reason === 'reused') reused++;
+    if (res.reason === 'other-lang') otherLang++;
+    if (force || !role.manualVoice) {
+      if (role.voice !== res.voice) changed++;
+      role.voice = res.voice;
+      role.castReason = res.reason;
+    }
+  }
+  renderRoles(); autoSaveTimer();
+  const parts = ['голосов подобрано: ' + cast.size, 'изменено: ' + changed];
+  if (reused) parts.push('дублей не избежать: ' + reused);
+  if (otherLang) parts.push('другой язык: ' + otherLang);
+  toast('Кастинг: ' + parts.join(' · '), reused ? 'err' : 'ok');
 }
 
 async function translateAll() {
@@ -520,6 +620,47 @@ async function translateAll() {
   $('imp-progress').classList.add('hidden');
 }
 
+/* Раздача нарезок персонажу: реплики этого героя в порядке сценария.
+ *
+ * Раньше было segs[i % segs.length], где i — индекс по ВСЕМ репликам книги:
+ * два героя получали одну и ту же нарезку на одинаковых местах, а порядок
+ * не имел отношения к порядку записи. Теперь у каждого героя своя
+ * последовательность нарезок, а ручная привязка (bubble.clipSeg) главнее.
+ *
+ * Режимы: 'order' — как записано (один проход), 'duration' — нарезки
+ * записаны вразнобой, подбираем по близости длительности. */
+function roleLines(roleId) {
+  return allBubbles().filter(x => x.b.roleId === roleId && x.b.text.trim());
+}
+
+function buildTakeMap() {
+  const map = new Map(); // roleId -> { order, lines, segs, clip, missing, unused, mode }
+  for (const role of project.roles) {
+    if (role.type !== 'clip' || !role.clipId) continue;
+    const clip = project.clips.find(c => c.id === role.clipId);
+    if (!clip || !clip.segs.length) continue;
+    const lines = roleLines(role.id);
+    if (!lines.length) continue;
+    const mode = role.takeMode === 'duration' ? 'duration' : 'order';
+    const res = resolveTakes({
+      lineDurs: lines.map(x => (x.b.audio && x.b.audio.duration) || estimateSpeakDur(x.b.text)),
+      segDurs: clip.segs.map(s => s.duration || 0),
+      mode,
+      manual: lines.map(x => x.b.clipSeg),
+    });
+    map.set(role.id, { ...res, lines, segs: clip.segs, clip, mode });
+  }
+  return map;
+}
+
+/* Какая нарезка назначена этой реплике (с учётом ручной привязки). */
+function takeIndexFor(takeMap, roleId, lineIdx) {
+  const t = takeMap.get(roleId);
+  if (!t) return null;
+  const i = t.order[lineIdx];
+  return i === undefined ? null : i;
+}
+
 async function ttsAll() {
   if (settings.voiceBackend === 'browser') {
     toast('Браузерные голоса нельзя записать в видео — включите Edge-TTS', 'err');
@@ -528,18 +669,26 @@ async function ttsAll() {
   const bubbles = allBubbles().filter(x => x.b.text.trim());
   if (!bubbles.length) { toast('Нет реплик для озвучки', 'err'); return; }
   $('imp-progress').classList.remove('hidden');
+  const takeMap = buildTakeMap();
+  const lineNo = new Map();
+  for (const t of takeMap.values()) t.lines.forEach((x, i) => lineNo.set(x.b, i));
+  let noTake = 0, ttsCount = 0, clipCount = 0;
   for (let i = 0; i < bubbles.length; i++) {
     const { b } = bubbles[i];
     setProgress(i / bubbles.length, `Озвучка ${i + 1}/${bubbles.length}: ${b.text.slice(0, 40)}`);
     try {
       const role = roleById(b.roleId);
       if (role && role.type === 'clip' && role.clipId) {
-        const clip = project.clips.find(c => c.id === role.clipId);
-        if (clip && clip.segs.length) {
-          const seg = clip.segs[i % clip.segs.length];
+        const t = takeMap.get(role.id);
+        const si = t ? takeIndexFor(takeMap, role.id, lineNo.get(b) ?? 0) : null;
+        const seg = t && si != null ? t.segs[si] : null;
+        if (seg) {
           b.audio = { blob: seg.blob, duration: seg.duration, noTrim: true };
+          b.clipSeg = si;
+          clipCount++;
           continue;
         }
+        noTake++;
       }
       const res = await synthesizeLine(settings, b.text, {
         voice: (role && role.voice) || defaultVoice(),
@@ -548,7 +697,7 @@ async function ttsAll() {
         volume: (role && role.volume) || '+0%',
         style: (role && role.style) || '',
       });
-      if (res && res.blob) b.audio = { blob: res.blob, duration: 0 };
+      if (res && res.blob) { b.audio = { blob: res.blob, duration: 0 }; b.clipSeg = null; ttsCount++; }
     } catch (e) {
       console.error(e);
       toast(`Ошибка озвучки #${i + 1}: ${e.message}`, 'err');
@@ -562,7 +711,11 @@ async function ttsAll() {
   setProgress(1, 'Готово');
   $('imp-progress').classList.add('hidden');
   renderScript(); autoSaveTimer();
-  toast(`Озвучено реплик: ${allBubbles().filter(x => x.b.audio).length}/${bubbles.length}`);
+  const parts = [`озвучено: ${allBubbles().filter(x => x.b.audio).length}/${bubbles.length}`];
+  if (clipCount) parts.push('нарезками: ' + clipCount);
+  if (ttsCount) parts.push('озвучкой: ' + ttsCount);
+  if (noTake) parts.push('БЕЗ нарезки (озвучено ИИ): ' + noTake);
+  toast('Озвучка: ' + parts.join(' · '), noTake ? 'err' : 'ok');
 }
 
 function blobDuration(blob) {
@@ -749,7 +902,7 @@ function renderRoles() {
     if (!pool.some(v => v.id === r.voice)) pool.unshift(voiceByIdSafe(r.voice));
     pool.forEach(v => voiceSel.appendChild(el('option', { value: v.id }, [v.id])));
     voiceSel.value = r.voice;
-    voiceSel.onchange = () => { r.voice = voiceSel.value; autoSaveTimer(); toast('Голос: ' + r.voice); };
+    voiceSel.onchange = () => { r.voice = voiceSel.value; r.manualVoice = true; autoSaveTimer(); toast('Голос: ' + r.voice); };
 
     const nameInp = el('input', { style: 'flex:1;min-width:90px;background:#0f1420;border:1px solid #2c3a5e;color:#e8edf7;border-radius:8px;padding:5px 8px', value: r.name || '' });
     nameInp.oninput = () => { r.name = nameInp.value; autoSaveTimer(); };
@@ -772,8 +925,8 @@ function renderRoles() {
     (project.clips || []).forEach(c => clipSel.appendChild(el('option', { value: c.id }, [c.name])));
     clipSel.value = r.clipId || '';
     clipSel.disabled = typeSel.value !== 'clip';
-    typeSel.onchange = () => { r.type = typeSel.value; clipSel.disabled = typeSel.value !== 'clip'; autoSaveTimer(); };
-    clipSel.onchange = () => { r.clipId = clipSel.value; autoSaveTimer(); };
+    typeSel.onchange = () => { r.type = typeSel.value; clipSel.disabled = typeSel.value !== 'clip'; autoSaveTimer(); renderRoles(); };
+    clipSel.onchange = () => { r.clipId = clipSel.value; autoSaveTimer(); renderRoles(); };
 
     const pit = slider('-40', '40', '1', r.pitchNum != null ? r.pitchNum : 0, (v) => { r.pitchNum = +v; r.pitch = (+v > 0 ? '+' : '') + v + 'Hz'; autoSaveTimer(); }, 'Hz', label('Высота'));
     const rate = slider('-50', '100', '5', r.rateNum != null ? r.rateNum : 0, (v) => { r.rateNum = +v; r.rate = (+v > 0 ? '+' : '') + v + '%'; autoSaveTimer(); }, '%', label('Темп'));
@@ -787,12 +940,116 @@ function renderRoles() {
       },
     }, ['✕']);
 
-    list.appendChild(el('div', { class: 'item' }, [
+    const rows = [
       el('div', { class: 'row wrap' }, [emo, nameInp, typeSel, clipSel, delB]),
-      el('div', { class: 'row wrap', style: 'margin-top:6px' }, [voiceSel, st]),
+      el('div', { class: 'row wrap', style: 'margin-top:6px' }, [voiceSel, st, castHint(r)]),
       el('div', { class: 'row wrap', style: 'margin-top:6px' }, [pit, rate, vol]),
+    ];
+    if (r.type === 'clip') rows.push(renderTakeBinding(r));
+    list.appendChild(el('div', { class: 'item' }, rows));
+  });
+}
+
+/* Блок «Нарезки» для персонажа, озвученного своим клипом: показывает,
+ * сколько реплик и сколько нарезок, даёт послушать и привязать вручную. */
+function renderTakeBinding(role) {
+  const box = el('div', { style: 'margin-top:8px;border-top:1px solid #2c3a5e;padding-top:8px' });
+  const clip = project.clips.find(c => c.id === role.clipId);
+  const lines = roleLines(role.id);
+  const head = el('div', { class: 'row wrap', style: 'gap:6px;align-items:center' });
+
+  if (!clip) {
+    head.appendChild(el('span', { class: 'muted' }, ['Клип не выбран — выберите его выше, чтобы раздать нарезки']));
+    box.appendChild(head);
+    return box;
+  }
+  if (!clip.segs.length) {
+    head.appendChild(el('span', { class: 'muted' }, ['В клипе нет нарезок (загрузите аудио заново, чтобы фразы разрезались по тишине)']));
+    box.appendChild(head);
+    return box;
+  }
+
+  const mode = role.takeMode === 'duration' ? 'duration' : 'order';
+  head.appendChild(el('b', {}, [`🎙 нарезки: ${clip.segs.length}`]));
+  head.appendChild(el('span', { class: 'muted' }, [`реплик у героя: ${lines.length}`]));
+
+  const modeSel = el('select', { class: 'mini', style: 'background:#0f1420;border:1px solid #2c3a5e;color:#e8edf7;border-radius:8px;padding:3px 6px' });
+  modeSel.appendChild(el('option', { value: 'order' }, ['↔ по порядку записи']));
+  modeSel.appendChild(el('option', { value: 'duration' }, ['⏱ по длительности']));
+  modeSel.value = mode;
+  modeSel.onchange = () => { role.takeMode = modeSel.value; autoSaveTimer(); renderRoles(); };
+  head.appendChild(modeSel);
+
+  const resetB = el('button', {
+    class: 'btn mini', title: 'Снять ручные привязки',
+    onclick: () => { for (const x of lines) x.b.clipSeg = null; autoSaveTimer(); renderRoles(); },
+  }, ['↺ сбросить привязки']);
+  head.appendChild(resetB);
+
+  const takeMap = buildTakeMap();
+  const t = takeMap.get(role.id);
+  // t — та же resolveTakes, что и при озвучке, чтобы интерфейс и рендер
+  // показывали одну и ту же раздачу
+  const plan = t || resolveTakes({
+    lineDurs: lines.map(x => estimateSpeakDur(x.b.text)),
+    segDurs: clip.segs.map(s => s.duration || 0),
+    mode,
+  });
+  const bad = plan.missing.length;
+  if (bad) head.appendChild(el('span', { style: 'color:var(--warn)' }, [`⚠ без нарезки: ${bad} — озвучтся ИИ`]));
+  if (plan.unused.length) head.appendChild(el('span', { class: 'muted' }, [`лишних нарезок: ${plan.unused.length}`]));
+  box.appendChild(head);
+
+  if (!lines.length) {
+    box.appendChild(el('div', { class: 'muted' }, ['У героя пока нет реплик — разметьте роли или назначьте их вручную']));
+    return box;
+  }
+
+  const wrap = el('div', { class: 'list', style: 'margin-top:6px;max-height:320px;overflow:auto' });
+  lines.forEach((x, li) => {
+    const auto = t ? t.order[li] : plan.order[li];
+    const sel = el('select', { class: 'mini', style: 'flex:1;min-width:150px;background:#0f1420;border:1px solid #2c3a5e;color:#e8edf7;border-radius:8px;padding:3px 6px' });
+    sel.appendChild(el('option', { value: '' }, ['— без нарезки (озвучить ИИ) —']));
+    clip.segs.forEach((s, si) => {
+      const mismatch = auto != null ? takeMismatch(estimateSpeakDur(x.b.text), s.duration) : 1;
+      const mark = mismatch > 1.6 ? ' ⚠' : '';
+      sel.appendChild(el('option', { value: String(si) }, [`№${si + 1} · ${(s.duration || 0).toFixed(1)} c${mark}`]));
+    });
+    const cur = x.b.clipSeg != null ? Number(x.b.clipSeg) : (auto != null ? auto : '');
+    sel.value = cur === null ? '' : String(cur);
+    sel.onchange = () => {
+      const v = sel.value;
+      x.b.clipSeg = v === '' ? null : Number(v);
+      if (v === '') x.b.audio = null;
+      autoSaveTimer(); renderRoles();
+    };
+
+    const play = el('button', {
+      class: 'btn mini', title: 'Прослушать нарезку',
+      onclick: () => {
+        const si = sel.value === '' ? null : Number(sel.value);
+        if (si != null && clip.segs[si]) playBlob(clip.segs[si].blob);
+      },
+    }, ['▶']);
+
+    wrap.appendChild(el('div', { class: 'row', style: 'gap:6px;align-items:center;margin-top:4px' }, [
+      el('span', { class: 'muted', style: 'min-width:52px' }, [`стр. ${x.pi + 1}`]),
+      el('span', { style: 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, [x.b.text || '…']),
+      play, sel,
     ]));
   });
+  box.appendChild(wrap);
+  return box;
+}
+
+/* Почему именно этот голос: «по полу», «свободный», «другой язык» и т.п.
+ * Полезно, когда подбор сработал не идеально. */
+function castHint(role) {
+  const reason = role.castReason;
+  if (!reason || reason === 'manual') return el('span', {});
+  const warn = reason === 'reused' || reason === 'other-lang';
+  return el('span', { style: 'font-size:11px;color:' + (warn ? 'var(--warn)' : 'var(--mut)') },
+    ['голос: ' + (CAST_REASON[reason] || reason)]);
 }
 
 function label(t) { return el('span', { class: 'muted', style: 'font-size:11px;min-width:54px' }, [t]); }
@@ -942,7 +1199,9 @@ async function doAudioOnly() {
  * ================================================================ */
 /* Слушатели полей настроек вешаются ровно один раз за сессию: bindSettings()
  * зовётся повторно при импорте проекта и при сбросе, и без этого га каждый
- * обработчик дублировался (значение менялось N раз, ререндер шёл N раз). */
+ * обработчик дублировался (значение менялось N раз, ререндер шёл N раз).
+ * Функция годится ТОЛЬКО для панели настроек: в wire() флаг уже выставлен,
+ * и обработчик был бы молча потерян. */
 let uiBound = false;
 function onFirstBind(node, type, fn) {
   if (uiBound || !node) return;
@@ -1386,6 +1645,7 @@ async function wire() {
   $('btnSubs').addEventListener('click', () => exportScript());
 
   $('btnAddRole').addEventListener('click', () => addRole());
+  $('btnAutoCast').addEventListener('click', (e) => autoCast({ force: e.shiftKey }));
   $('btnPreview').addEventListener('click', () => doPreview());
   $('btnRender').addEventListener('click', () => doRender());
   $('btnAudioOnly').addEventListener('click', () => doAudioOnly());

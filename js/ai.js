@@ -685,18 +685,64 @@ async function chatAnthropicVision(settings, dataURL, prompt) {
   return (j.content || []).map(x => x.text).join('') || '';
 }
 
-/* Раздать роли: вход — реплики [{idx, page, text}] */
-export async function analyzeRoles(settings, lines) {
-  const items = lines.map((l, idx) => ({ idx, text: l.text }));
-  const sys = 'Ты — режиссёр озвучки манги/комикса. По репликам определи говорящих. ' +
-    'Верни строго JSON без пояснений: {"characters":[{"name":"...","gender":"male|female|other"}], ' +
-    '"lines":[{"idx":0,"character":"имя из characters"}]}. Если говорящий неясен — character: "Нарратор".';
-  const out = await chat(settings, [
-    { role: 'system', content: sys },
-    { role: 'user', content: 'Реплики (JSON): ' + JSON.stringify(items) },
-  ], { json: true, minGap: 6000 });
-  const parsed = parseJsonLoose(typeof out === 'string' ? out : JSON.stringify(out));
-  return parsed && parsed.lines ? { roles: parsed.characters || [], items: parsed.lines } : null;
+/* Раздать роли: вход — реплики [{idx, page, text}]
+ *
+ * Сценарий режется на пачки: 700-страничная манга целиком в контекст не
+ * влезает, и раньше такой запрос просто падал по размеру. Персонажи из всех
+ * пачек объединяются, говорящие нормализуются на стороне вызывающего.
+ * Возвращает { characters, items, batches, missing } — items с общим idx,
+ * сквозным по всему сценарию. */
+const ROLE_BATCH = 60;
+
+export async function analyzeRoles(settings, lines, opts = {}) {
+  const langName = opts.langName || '';
+  const batches = [];
+  for (let i = 0; i < lines.length; i += ROLE_BATCH) batches.push(lines.slice(i, i + ROLE_BATCH));
+
+  const characters = [];
+  const items = [];
+  const seenChar = new Set();
+  const missing = [];
+
+  for (let b = 0; b < batches.length; b++) {
+    const part = batches[b];
+    const base = b * ROLE_BATCH;
+    const sys = 'Ты — режиссёр дубляжа манги/комикса. Определи, кто говорит каждую реплику. ' +
+      (langName ? `Язык реплик: ${langName}. ` : '') +
+      'Правила:\n' +
+      '1. В characters перечисли КАЖДОГО говорящего один раз: {"name":"Имя","gender":"male|female|other"}.\n' +
+      '2. В lines верни {"idx":<номер из входа>,"character":"имя ровно как в characters"} для КАЖДОЙ реплики.\n' +
+      '3. Имя выбирай устойчиво: один и тот же герой на всех страницах должен называться одинаково, ' +
+      'сначала по имени, а не по прозвищу.\n' +
+      '4. Закадровый текст, внутренний монолог и мысли автора — character: "Нарратор".\n' +
+      '5. Если говорящего определить невозможно — character: "?" (не выдумывай имя).\n' +
+      '6. Верни строго JSON без пояснений.';
+    const payload = part.map((l) => ({ idx: l.idx, page: l.page, text: l.text }));
+    const out = await chat(settings, [
+      { role: 'system', content: sys },
+      { role: 'user', content: 'Реплики (JSON): ' + JSON.stringify(payload) },
+    ], { json: true, minGap: 6000 });
+    const parsed = parseJsonLoose(typeof out === 'string' ? out : JSON.stringify(out));
+    if (!parsed || !Array.isArray(parsed.lines)) {
+      missing.push({ from: base, to: base + part.length - 1 });
+      continue;
+    }
+    for (const c of Array.isArray(parsed.characters) ? parsed.characters : []) {
+      const name = String((c && c.name) || '').trim();
+      const key = name.toLowerCase().replace(/ё/g, 'е');
+      if (!name || seenChar.has(key)) continue;
+      seenChar.add(key);
+      characters.push({ name, gender: (c && c.gender) || 'other' });
+    }
+    for (const it of parsed.lines) {
+      const idx = Number(it && it.idx);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= lines.length) continue;
+      items.push({ idx, character: String((it && it.character) || '').trim() });
+    }
+  }
+
+  if (!items.length && !characters.length) return null;
+  return { characters, items, batches: batches.length, missing };
 }
 
 /* Перевод реплик батчами. Возвращает массив той же длины, что и lines;

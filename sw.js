@@ -1,9 +1,10 @@
-const CACHE = 'voicecomic-v5';
+const CACHE = 'voicecomic-v6';
 const CORE = [
   './',
   'index.html',
   'css/ui.css',
   'js/util.js',
+  'js/cast.js',
   'js/store.js',
   'js/ai.js',
   'js/models.dev.js',
