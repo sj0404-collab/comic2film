@@ -339,6 +339,24 @@ export function providerHasVision(pid) {
 export const FREE_MODELS_FALLBACK = ['openai'];
 export let FREE_MODELS = FREE_MODELS_FALLBACK.slice();
 
+/** Подмешать живой список анонимных моделей в каталог провайдера.
+ *  Раньше refreshFreeModels() только менял FREE_MODELS, который никто не
+ *  читал: кнопка «обновить список» показывала тост, а пикер отдавал тот же
+ *  статичный curated-список. Возвращает, сколько моделей добавилось. */
+export function mergeFreeModels(pid, list) {
+  const p = PROVIDERS[pid];
+  if (!p || !Array.isArray(p.models) || !Array.isArray(list)) return 0;
+  const have = new Set(p.models.map(m => m.id));
+  let added = 0;
+  for (const id of list) {
+    if (typeof id !== 'string' || !id || have.has(id)) continue;
+    have.add(id);
+    p.models.push({ id, free: true });
+    added++;
+  }
+  return added;
+}
+
 export async function refreshFreeModels() {
   try {
     const r = await fetch(POLLIMAGES + '/models');
@@ -372,14 +390,8 @@ export function parseJsonLoose(s) {
   return null;
 }
 
-/* Проверка: надо ли подождать из-за лимитов Pollinations (429) */
-async function maybeCooldown(res, cool) {
-  if (res.status === 429) {
-    await sleep(cool);
-    return true;
-  }
-  return false;
-}
+/* Проверка: надо ли подождать из-за лимитов (429).
+ * Счётчик ожиданий ведёт каждый вызов, а не этот хелпер. */
 
 /** chat — единая точка вызова для любого провайдера из каталога.
  * settings: {ai:'pollinations'|'openrouter'|'openai'|'anthropic'|'gemini'|..., key, aiurl, aimodel, aiGap}
@@ -453,32 +465,66 @@ export async function chatWithImage(settings, messages, imageDataURL) {
 
 /* Универсальный вызов OpenAI-совместимых API (Pollinations/OpenRouter/OpenAI/
  * Groq/DeepSeek/Mistral/Together/xAI/Perplexity/Cerebras/custom) с ретраями
- * при 429 и парсингом JSON-ответа. */
+ * при 429/5xx и парсингом JSON-ответа. */
 async function openAICompat({ name, endpoint, headers = {}, key = '', model, messages, json = false, gap = 2500, signal }) {
-  const body = { model, messages, temperature: settings_tmp(model, json) };
-  if (json) body.response_format = { type: 'json_object' };
   const hd = { 'Content-Type': 'application/json', ...(key ? { Authorization: 'Bearer ' + key } : {}), ...headers };
-  for (let attempt = 0; attempt < 4; attempt++) {
+  let attempt = 0, waits = 0;
+  let wantJsonMode = json; // не все провайдеры понимают response_format
+  while (true) {
+    const body = { model, messages, temperature: temperatureFor(model, wantJsonMode) };
+    if (body.temperature === undefined) delete body.temperature;
+    if (wantJsonMode) body.response_format = { type: 'json_object' };
     try {
       const r = await fetch(endpoint, { method: 'POST', headers: hd, body: JSON.stringify(body), signal });
-      if (await maybeCooldown(r, 15000)) continue;
+      if (r.status === 429 && waits < 3) { waits++; await sleep(5000 * waits); continue; }
       if (!r.ok) {
         const t = await r.text().catch(() => '');
-        throw new Error(`${name} ${r.status}: ${t.slice(0, 180)}`);
+        // провайдер не умеет response_format — пробуем без него, это не ошибка запроса
+        if (wantJsonMode && r.status === 400 && /response_format|json_object/i.test(t)) {
+          wantJsonMode = false; attempt = 0; continue;
+        }
+        const err = new Error(`${name} ${r.status}: ${t.slice(0, 180)}`);
+        err.status = r.status;
+        throw err;
       }
       const j = await r.json();
       let out = (j.choices && j.choices[0] && (j.choices[0].message || {}).content) || '';
-      if (json) { const parsed = parseJsonLoose(typeof out === 'string' ? out : JSON.stringify(out)); if (parsed) return parsed; }
+      if (wantJsonMode) {
+        const parsed = parseJsonLoose(typeof out === 'string' ? out : JSON.stringify(out));
+        if (parsed) return parsed;
+      }
       return out;
     } catch (e) {
       if (e.name === 'AbortError') throw e;
-      if (attempt === 3) throw e;
+      // 4xx (кроме 429, который обработан выше) — запрос неверный, повтор не поможет
+      if (e.status >= 400 && e.status < 500) throw e;
+      if (attempt >= 3) throw e;
       await sleep(gap * (attempt + 1));
+      attempt++;
     }
   }
 }
 
-function settings_tmp(model, json) { return json ? 0.1 : 0.5; }
+/* reasoning-модели (o1/o3/o4, gpt-5*, codex) принимают только temperature=1,
+ * любое другое значение даёт 400. Для них поле просто не отправляется. */
+const REASONING_MODELS = /^(o[1-9]\d*(\.\d+)?(-|$)|gpt-5|codex)/i;
+
+function temperatureFor(model, json) {
+  if (json) return 0.1;
+  if (REASONING_MODELS.test(String(model || ''))) return undefined;
+  return 0.5;
+}
+
+export { temperatureFor, REASONING_MODELS };
+
+/* Текст из parts OpenAI-совместимого формата (после подстановки картинок). */
+function textOf(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map(p => (p && typeof p.text === 'string' ? p.text : (p && p.type === 'image_url' ? '' : ''))).filter(Boolean).join(' ');
+  }
+  return content == null ? '' : String(content);
+}
 
 async function chatGemini(settings, messages, opts = {}) {
   const model = settings.aimodel || 'gemini-2.0-flash';
@@ -486,24 +532,39 @@ async function chatGemini(settings, messages, opts = {}) {
   if (!key) throw new Error('Gemini: нужен API-ключ');
   const gap = opts.minGap ?? settings.aiGap ?? 2500;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
-  const parts = messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+  // system-роль Gemini не знает: раньше системный промпт уходил как ещё один
+  // user-turn, и модель отвечала на него вместо вопроса.
+  const sys = messages.filter(m => m.role === 'system').map(m => textOf(m.content)).join('\n\n');
+  const parts = messages
+    .filter(m => m.role !== 'system')
+    .map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: textOf(m.content) }] }));
+  if (!parts.length) parts.push({ role: 'user', parts: [{ text: 'ping' }] });
+  const payload = { contents: parts };
+  if (sys.trim()) payload.systemInstruction = { parts: [{ text: sys }] };
   const img = opts.images && opts.images[0];
   if (img && parts.length) {
     const d = img.dataURL || img;
     const inl = d.split(';base64,');
     parts[parts.length - 1].parts.push({ inline_data: { mime_type: inl[0].split(':')[1] || 'image/jpeg', data: inl[1] } });
   }
-  let attempt = 0;
+  let attempt = 0, waits = 0;
   while (true) {
     try {
-      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: parts }), signal: opts.signal });
-      if (await maybeCooldown(r, 15000)) continue;
-      if (!r.ok) throw new Error(`Gemini ${r.status}`);
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: opts.signal });
+      if (r.status === 429 && waits < 3) { waits++; await sleep(5000 * waits); continue; }
+      if (!r.ok) { const t = await r.text().catch(() => ''); const e = new Error('Gemini ' + r.status + (t ? ': ' + t.slice(0, 150) : '')); e.status = r.status; throw e; }
       const j = await r.json();
-      return j.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+      const out = j.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+      if (!out && j.candidates?.[0]?.finishReason && j.candidates[0].finishReason !== 'STOP') {
+        const e = new Error('Gemini ' + j.candidates[0].finishReason + (j.promptFeedback?.blockReason ? ' (' + j.promptFeedback.blockReason + ')' : ''));
+        e.status = 400; throw e;
+      }
+      if (opts.json) { const parsed = parseJsonLoose(out); if (parsed) return parsed; }
+      return out;
     } catch (e) {
       if (e.name === 'AbortError') throw e;
-      if (attempt === 3) throw e;
+      if (e.status >= 400 && e.status < 500) throw e;
+      if (attempt >= 3) throw e;
       attempt++;
       await sleep(gap * attempt);
     }
@@ -516,8 +577,9 @@ async function chatAnthropic(settings, messages, opts = {}) {
   if (!key) throw new Error('Anthropic: нужен API-ключ');
   const welcome = provider(settings.ai);
   const endpoint = settings.ai === 'custom' ? (settings.aiurl || '') : welcome.endpoint;
-  const sys = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
-  let bodyMsgs = messages.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }));
+  const sys = messages.filter(m => m.role === 'system').map(m => textOf(m.content)).join('\n\n');
+  let bodyMsgs = messages.filter(m => m.role !== 'system').map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: textOf(m.content) }));
+  if (!bodyMsgs.length) bodyMsgs = [{ role: 'user', content: 'ping' }];
   const img = opts.images && opts.images[0];
   if (img && bodyMsgs.length) {
     const d = img.dataURL || img;
@@ -530,9 +592,9 @@ async function chatAnthropic(settings, messages, opts = {}) {
     bodyMsgs[bodyMsgs.length - 1].content = content;
   }
   const body = { model, max_tokens: 4096, messages: bodyMsgs };
-  if (sys) body.system = sys;
+  if (sys.trim()) body.system = sys;
   const gap = opts.minGap ?? settings.aiGap ?? 2500;
-  let attempt = 0;
+  let attempt = 0, waits = 0;
   while (true) {
     try {
       const r = await fetch(endpoint, {
@@ -541,15 +603,16 @@ async function chatAnthropic(settings, messages, opts = {}) {
         body: JSON.stringify(body),
         signal: opts.signal,
       });
-      if (await maybeCooldown(r, 15000)) continue;
-      if (!r.ok) throw new Error(`Claude ${r.status}`);
+      if (r.status === 429 && waits < 3) { waits++; await sleep(5000 * waits); continue; }
+      if (!r.ok) { const t = await r.text().catch(() => ''); const e = new Error('Claude ' + r.status + (t ? ': ' + t.slice(0, 150) : '')); e.status = r.status; throw e; }
       const j = await r.json();
       let out = (j.content || []).map(x => x.text).join('') || '';
       if (opts.json) { const parsed = parseJsonLoose(out); if (parsed) return parsed; }
       return out;
     } catch (e) {
       if (e.name === 'AbortError') throw e;
-      if (attempt === 3) throw e;
+      if (e.status >= 400 && e.status < 500) throw e;
+      if (attempt >= 3) throw e;
       attempt++;
       await sleep(gap * attempt);
     }
@@ -636,9 +699,11 @@ export async function analyzeRoles(settings, lines) {
   return parsed && parsed.lines ? { roles: parsed.characters || [], items: parsed.lines } : null;
 }
 
-/* Перевод реплик батчами */
+/* Перевод реплик батчами. Возвращает массив той же длины, что и lines;
+ * непереведённые места — null (раньше мусорный idx вида "x" писался в
+ * out["x"], а в середине массива оставались дырки без объяснения). */
 export async function translateLines(settings, lines, toLang) {
-  const out = new Array(lines.length);
+  const out = new Array(lines.length).fill(null);
   const B = 30;
   for (let i = 0; i < lines.length; i += B) {
     const batch = lines.slice(i, i + B).map((l, k) => ({ idx: i + k, text: l.text }));
@@ -649,9 +714,23 @@ export async function translateLines(settings, lines, toLang) {
       { role: 'user', content: 'Реплики: ' + JSON.stringify(batch) },
     ], { json: true, minGap: 4000 });
     const parsed = parseJsonLoose(typeof outText === 'string' ? outText : JSON.stringify(outText));
-    if (!Array.isArray(parsed)) throw new Error('API вернул не JSON: ' + String(outText).slice(0, 120));
-    for (const it of parsed) out[it.idx] = it.text;
+    if (!Array.isArray(parsed)) {
+      const raw = typeof outText === 'string' ? outText : JSON.stringify(outText);
+      throw new Error('API вернул не JSON-массив: ' + String(raw).slice(0, 120));
+    }
+    for (const it of parsed) {
+      if (!it || typeof it !== 'object') continue;
+      const n = Number(it.idx);
+      if (!Number.isInteger(n) || n < 0 || n >= lines.length) continue; // мусорный idx
+      if (typeof it.text !== 'string' || !it.text.trim()) continue;
+      out[n] = it.text;
+    }
     await sleep(300);
   }
   return out;
+}
+
+/** Сколько реплик реально переведено (для честного отчёта в UI). */
+export function countTranslated(out) {
+  return (out || []).filter(v => typeof v === 'string' && v.trim()).length;
 }

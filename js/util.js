@@ -8,10 +8,12 @@ export const WIN_EPOCH_SEC = 11644473600; // 1601-01-01 UTC → unix
 
 export function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 
-/* Дата в формате "Tue Sep 20 2026 12:00:00 GMT+0000 (Coordinated Universal Time)" */
+/* Дата в формате edge-tts для заголовка X-Timestamp:
+ * "Tue, 20 Sep 2026 12:00:00 GMT+0000" (RFC 1123 + часовой пояс).
+ * Раньше здесь терялась запятая и к SSML-сообщению добавлялся лишний "Z"
+ * после скобок — два несовместимых формата в одном соединении. */
 export function nowEdgeString(d) {
-  const s = (d || new Date()).toUTCString(); // "Tue, 20 Sep 2026 12:00:00 GMT"
-  return s.replace('GMT', 'GMT+0000 (Coordinated Universal Time)').replace(',', '');
+  return (d || new Date()).toUTCString().replace('GMT', 'GMT+0000');
 }
 
 /* Количество секунд от 1601-01-01 (Windows file time секунды) */

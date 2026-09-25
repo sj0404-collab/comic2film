@@ -3,9 +3,9 @@
 import {
   toast, uuid, download, fmtDur, loadImage, loadScript, loadCss,
 } from './util.js';
-import { idbSet, idbGet, idbDel, KEY_PROJECT, KEY_SETTINGS } from './store.js';
-import { analyzeRoles, translateLines, FREE_MODELS, refreshFreeModels, PROVIDERS, provider, providerHasVision, isFreeModel, modelMeta } from './ai.js';
-import { openModelPicker, setSettingsGetter as modelsuiSetSettings } from './modelsui.js';
+import { idbSet, idbGet, KEY_PROJECT, KEY_SETTINGS } from './store.js';
+import { analyzeRoles, translateLines, countTranslated, refreshFreeModels, mergeFreeModels, PROVIDERS, provider, providerHasVision, modelMeta } from './ai.js';
+import { openModelPicker, setSettingsGetter as modelsuiSetSettings, invalidateModelCache } from './modelsui.js';
 import { extractPages, clipsFromAudio } from './import.js';
 import { ocrPage } from './ocr.js';
 import { bubbleModelStatus, bubbleModelTargetBytes, downloadBubbleModel, bubbleModelClear, setYoloModel, getYoloModel, getModelInfo, YOLO_MODELS } from './yolo.js';
@@ -14,7 +14,7 @@ import {
   synthesizeLine, voicesForLang, allVoices, fetchVoicesFromMicrosoft,
 } from './voices.js';
 import {
-  renderAndRecord, renderAudioTrack, previewStart, resolveCanvas, toMP4, toGIF, wavToMp3,
+  renderAndRecord, renderAudioTrack, previewStart, resolveCanvas, toMP4, toGIF, wavToMp3, measureTrimmedDuration,
 } from './engine.js';
 
 const $ = (id) => document.getElementById(id);
@@ -45,7 +45,7 @@ function defaultSettings() {
     voiceBackend: 'edge', proxy: '',
     backendUrl: '', backendToken: '',
     gap: 350, res: '1080x1920', fps: 30, zoom: 'smart', caption: 'bubble', biling: 'orig',
-    musicUrl: '', musicBlob: null, mvol: 15,
+    musicBlob: null, mvol: 15,
   };
 }
 
@@ -172,13 +172,27 @@ function saveErrText(e) {
   return msg || 'неизвестная ошибка записи';
 }
 
+/* Копия проекта для IndexedDB. structuredClone(project) копировал и File/Blob
+ * страниц и озвучки целиком на каждом автосохранении (сотни МБ при 700
+ * страницах). Здесь копируется только верхний уровень, а ссылки на файлы
+ * остаются общими — IndexedDB сам разберётся при записи. */
+function projectForStore() {
+  return {
+    kind: project.kind,
+    roles: project.roles,
+    clips: project.clips,
+    pages: project.pages.map((p) => {
+      const { url, ...rest } = p; // url — objectURL, восстанавливается из file
+      return rest;
+    }),
+  };
+}
+
 async function saveToDB() {
   const errs = [];
   try { await idbSet(KEY_SETTINGS, settings); } catch (e) { errs.push('настройки — ' + saveErrText(e)); }
   try {
-    const store = structuredClone(project);
-    store.pages.forEach(p => delete p.url);
-    await idbSet(KEY_PROJECT, store);
+    await idbSet(KEY_PROJECT, projectForStore());
   } catch (e) { errs.push('проект — ' + saveErrText(e)); }
   if (errs.length) throw new Error(errs.join('; '));
 }
@@ -287,10 +301,16 @@ function showImpActions(kind) {
 function useFirstClipAsMusic() {
   const clip = project.clips[0];
   if (!clip || !clip.segs.length) { toast('Нет нарезок', 'err'); return; }
-  settings.musicBlob = clip.segs[0].blob;
-  settings.musicUrl = URL.createObjectURL(settings.musicBlob);
+  setMusic(clip.segs[0].blob);
+}
+
+/* Музыка хранится блобом: движок монтажа декодирует settings.musicBlob.
+ * Отдельный musicUrl нигде не читался, но создавался на каждый клик и терял
+ * objectURL — утечка. */
+function setMusic(blob) {
+  settings.musicBlob = blob || null;
   renderMusicLabel();
-  toast('Клип добавлен фоновой музыкой');
+  autoSaveTimer();
 }
 
 function renderLib() {
@@ -383,14 +403,15 @@ function renderClipsGrid() {
 }
 function useAsMusic(clip) {
   if (!clip.segs.length) { toast('Нет фраз для музыки', 'err'); return; }
-  settings.musicBlob = clip.segs[0].blob;
-  settings.musicUrl = URL.createObjectURL(settings.musicBlob);
-  renderMusicLabel();
+  setMusic(clip.segs[0].blob);
   toast('Нарезанный клип → фоновая музыка');
 }
 function delClip(id) {
-  project.clips = project.clips.filter(c => c.id !== id);
-  renderClipsList();
+  const c = project.clips.find(x => x.id === id);
+  if (c && c.url) { try { URL.revokeObjectURL(c.url); } catch (e) {} }
+  project.clips = project.clips.filter(x => x.id !== id);
+  if (settings.musicBlob && c && c.segs.some(s => s.blob === settings.musicBlob)) setMusic(null);
+  renderClipsList(); autoSaveTimer();
 }
 
 /* ================================================================
@@ -480,7 +501,9 @@ async function translateAll() {
     const out = await translateLines(settings, bubbles.map(x => ({ text: x.b.text })), target);
     bubbles.forEach((x, i) => { if (out[i] != null) x.b.tr = out[i]; });
     renderScript(); autoSaveTimer();
-    toast('Переведено');
+    const done = countTranslated(out);
+    const lost = bubbles.length - done;
+    toast('Переведено ' + done + ' из ' + bubbles.length + (lost ? ' · без перевода: ' + lost : ''), lost ? 'err' : 'ok');
   } catch (e) {
     console.error(e);
     toast('Перевод: ' + e.message, 'err');
@@ -524,7 +547,7 @@ async function ttsAll() {
   }
   for (const { b } of bubbles) {
     if (b.audio && b.audio.blob && !b.audio.duration) {
-      try { b.audio.duration = await blobDuration(b.audio.blob); } catch (e) { b.audio.duration = 0; }
+      b.audio.duration = await voicedDuration(b.audio.blob);
     }
   }
   setProgress(1, 'Готово');
@@ -539,6 +562,22 @@ function blobDuration(blob) {
     au.onloadedmetadata = () => { const d = au.duration || 0; URL.revokeObjectURL(au.src); res(d); };
     au.onerror = () => { URL.revokeObjectURL(au.src); rej(new Error('нет метаданных')); };
   });
+}
+
+/* Реальная длительность озвучки. Движок монтажа обрезает тишину по краям
+ * (TRIM в engine.js), поэтому и таймлайн кадров, и подписи должны считаться
+ * от обрезанного куска: раньше кадр брал полную длительность блоба, а звучал
+ * обрезанный — реплики расходились с картинкой. Параметры обрезки берутся
+ * из движка, чтобы они не разъехались. */
+let _measCtx = null;
+function measCtx() {
+  if (!_measCtx) _measCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return _measCtx;
+}
+async function voicedDuration(blob) {
+  const trimmed = await measureTrimmedDuration(measCtx(), blob);
+  if (trimmed) return trimmed;
+  try { return await blobDuration(blob); } catch (e) { return 0; }
 }
 
 function exportScript() {
@@ -927,11 +966,8 @@ function bindSettings() {
   onFirstBind($('opt-music'), 'change', (e) => {
     if (!e.target.files.length) return;
     const f = e.target.files[0];
-    settings.musicBlob = f;
-    settings.musicUrl = URL.createObjectURL(f);
-    renderMusicLabel();
+    setMusic(f);
     toast('Музыка: ' + f.name);
-    autoSaveTimer();
   });
   uiBound = true;
 }
@@ -973,13 +1009,19 @@ function populateProviderSelect() {
     if (fa !== fb) return fa - fb;
     return a[1].name.localeCompare(b[1].name, 'ru');
   });
+  // custom без моделей в каталоге, но его нельзя выкидывать из селекта:
+  // иначе при settings.ai === 'custom' поле молча показывало Pollinations,
+  // а в настройках оставался 'custom' — UI врал о выбранном провайдере.
+  sel.appendChild(el('option', { value: 'custom' }, ['Свой OpenAI-совместимый · впишите адрес и модель']));
   entries.forEach(([id, p]) => {
+    if (id === 'custom') return;
     const tag = p.key === false ? ' 🆓 без ключа' : (p.curated ? ' 🔑' : ' · каталог');
     if (!p.models || !p.models.length) return;
     sel.appendChild(el('option', { value: id }, [p.name.includes('·') ? p.name : p.name + tag]));
   });
   if (!PROVIDERS[settings.ai]) settings.ai = 'pollinations';
   sel.value = settings.ai;
+  if (sel.value !== settings.ai) settings.ai = sel.value || 'pollinations';
 }
 
 /* OCR-селект: Tesseract (всегда) + все vision-провайдеры каталога. */
@@ -1061,8 +1103,12 @@ function syncModelUi() {
 async function refreshModelList() {
   toast('Обновляю список моделей без ключа…');
   const list = await refreshFreeModels();
+  const added = mergeFreeModels('pollinations', list);
+  invalidateModelCache();
   renderModelCurrent();
-  toast('Моделей без ключа (Pollinations): ' + list.length + ' (' + list.slice(0, 10).join(', ') + (list.length > 10 ? '…' : '') + ')');
+  toast('Моделей без ключа (Pollinations): ' + list.length +
+    (added ? ' · добавлено в каталог: ' + added : '') +
+    ' (' + list.slice(0, 10).join(', ') + (list.length > 10 ? '…' : '') + ')');
 }
 function bindInp(id) {
   const elEl = $(id);
@@ -1265,6 +1311,7 @@ async function importProject(file) {
 function resetAll() {
   stopPreview();
   project.pages.forEach(p => { if (p.url) URL.revokeObjectURL(p.url); });
+  (project.clips || []).forEach(c => { if (c.url) { try { URL.revokeObjectURL(c.url); } catch (e) {} } });
   project = defaultProject();
   settings = defaultSettings();
   bindSettings(); syncModelUi(); syncProviderUi(); renderAll();
@@ -1496,6 +1543,9 @@ async function init() {
       await probeMetrics(project.pages);
     }
   } catch (e) { console.error('init:', e); }
+  // движок монтажа читает project.settings; раньше оно выставлялось только
+  // перед рендером, и таймлайн строился по значениям по умолчанию
+  project.settings = settings;
   bindSettings();
   syncModelUi();
   syncProviderUi();

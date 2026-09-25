@@ -16,7 +16,8 @@ function ok(cond, name) {
 const gec = secMsgGecValue(1727100000000);
 ok(/^\d+\d+[A-Z0-9]+$/.test(gec) && gec.includes('6A5AA1D4EAFF4E9FB37E23D68491D6F4'), 'secMsgGecValue: тики + токен');
 
-ok(/^[A-Z][a-z]{2} \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT/.test(nowEdgeString(new Date())), 'nowEdgeString формат');
+ok(/^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT\+0000$/.test(nowEdgeString(new Date())),
+  'nowEdgeString формат (RFC 1123 с запятой, как у edge-tts)');
 
 ok(ssmlEscape('Привет <world> & "x"') === 'Привет &lt;world&gt; &amp; &quot;x&quot;', 'ssmlEscape');
 
@@ -281,6 +282,157 @@ ok(maxErr < 0.001, 'resampleLinear: значения близки к ориги�
   ok(/QuotaExceededError/.test(app), 'app.js: квота IndexedDB распознаётся и объясняется пользователю');
   ok(!/try \{ await idbSet\(KEY_PROJECT[\s\S]{0,200}catch \(e\) \{\}/.test(sv),
     'app.js saveToDB: пустой catch больше не глушит потерю данных');
+}
+
+/* ================================================================
+ * Регрессы на HIGH: громкость, зависания рендера, temperature/system,
+ * idx в переводе, голоса, кэш YOLO, каталог моделей, сохранение.
+ * ================================================================ */
+
+/* Код без комментариев: иначе ассерты ловят удалённые идентификаторы
+ * в пояснениях к фиксу. */
+function codeOnly(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+}
+
+/* [7] Громкость роли: слайдер пишет volumeNum (100 = 1.0), строка '+0%'
+ * разбиралась как 0.9. */
+{
+  const E = await import('../js/engine.js');
+  ok(E.roleGain({ volumeNum: 100 }) === 1, 'roleGain: 100% = единичная громкость');
+  ok(E.roleGain({ volumeNum: 200 }) === 2, 'roleGain: 200% = усиление x2');
+  ok(E.roleGain({ volumeNum: 10 }) === 0.1, 'roleGain: 10% = 0.1');
+  ok(E.roleGain({ volume: '+0%' }) === 1, "roleGain: старый формат '+0%' = 1 (было 0.9)");
+  ok(E.roleGain({ volume: '0%' }) === 1, "roleGain: старый формат '0%' = 1");
+  ok(E.roleGain({ volume: '+100%' }) === 2, "roleGain: старый формат '+100%' = 2 (было 1.9)");
+  ok(E.roleGain(null) === 1 && E.roleGain({}) === 1, 'roleGain: без роли/полей = 1');
+  ok(E.roleGain({ volumeNum: 5 }) === 0.05, 'roleGain: значения вне слайдера не залипают на 0.1');
+  const eng = fs.readFileSync(new URL('../js/engine.js', import.meta.url), 'utf8');
+  ok(!/clampVol/.test(eng), 'engine.js: старая clampVol (0.9 вместо 1.0) удалена');
+}
+
+/* [12, 13] Рендер не должен зависать: цикл музыки при duration<=0 и
+ * rAF-цикл записи без actx.resume()/без таймлайна. */
+{
+  const eng = fs.readFileSync(new URL('../js/engine.js', import.meta.url), 'utf8');
+  const ra = eng.slice(eng.indexOf('export async function renderAndRecord'), eng.indexOf('export async function renderAudioTrack'));
+  ok(/actx\.resume\(\)/.test(ra), 'engine.js renderAndRecord: AudioContext поднимается (иначе currentTime стоит и запись не завершится)');
+  ok(/if \(!item\) \{ try \{ rec\.stop\(\); \}/.test(ra), 'engine.js renderAndRecord: пустой таймлайн останавливает запись, а не крутит rAF вечно');
+  ok(/const guard = setTimeout\(\(\) => \{ try \{ rec\.stop\(\); \}/.test(ra), 'engine.js renderAndRecord: есть страховочный таймер остановки');
+  const rt = eng.slice(eng.indexOf('export async function renderAudioTrack'), eng.indexOf('function encodeWav'));
+  ok(/const step = m\.duration > 0 \? m\.duration/.test(rt) && /guard\+\+ < 10000/.test(rt),
+    'engine.js renderAudioTrack: шаг цикла музыки всегда > 0 (duration=0 вешал вкладку)');
+}
+
+/* [9, 10] temperature reasoning-моделям не отправляется; system-промпт Gemini
+ * уходит в systemInstruction, а не вторым user-turn. */
+{
+  const A = await import('../js/ai.js');
+  ok(A.temperatureFor('o4-mini', false) === undefined, 'temperature: o4-mini без temperature (иначе 400)');
+  ok(A.temperatureFor('o1-preview', false) === undefined, 'temperature: o1 без temperature');
+  ok(A.temperatureFor('gpt-5.2', false) === undefined, 'temperature: gpt-5.2 без temperature');
+  ok(A.temperatureFor('codex-mini', false) === undefined, 'temperature: codex без temperature');
+  ok(A.temperatureFor('llama-3.3-70b-versatile', false) === 0.5, 'temperature: обычные модели получают 0.5');
+  ok(A.temperatureFor('gpt-4o-mini', true) === 0.1, 'temperature: в json-режиме 0.1 даже для reasoning');
+  let body = null;
+  globalThis.fetch = async (u, o) => { body = JSON.parse(o.body); return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: 'x' }] }, finishReason: 'STOP' }] }) }; };
+  await A.chat({ ai: 'gemini', aimodel: 'gemini-2.5-flash', key: 'K', aiGap: 0 }, [
+    { role: 'system', content: 'СИСТЕМНЫЙ' }, { role: 'user', content: 'вопрос' },
+  ]);
+  ok(body.systemInstruction && body.systemInstruction.parts[0].text === 'СИСТЕМНЫЙ', 'Gemini: system-промпт в systemInstruction');
+  ok(body.contents.length === 1 && body.contents[0].role === 'user', 'Gemini: в contents остался только настоящий вопрос');
+  globalThis.fetch = async (u, o) => { body = JSON.parse(o.body); return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) }; };
+  await A.chat({ ai: 'openai', aimodel: 'o4-mini', key: 'k', aiGap: 0 }, [{ role: 'user', content: 'hi' }]);
+  ok(!('temperature' in body), 'OpenAI-совместимые: поле temperature отсутствует у reasoning-моделей');
+}
+
+/* [9] 4xx не ретраится, response_format умеет откат */
+{
+  const A = await import('../js/ai.js');
+  let n = 0;
+  globalThis.fetch = async () => { n++; return { ok: false, status: 401, text: async () => 'bad key' }; };
+  try { await A.chat({ ai: 'openai', aimodel: 'gpt-4o-mini', key: 'x', aiGap: 10 }, [{ role: 'user', content: 'hi' }]); } catch (e) { }
+  ok(n === 1, '401: одна попытка, без бесполезного бэкоффа (было 4)');
+  const bodies = [];
+  globalThis.fetch = async (u, o) => {
+    const b = JSON.parse(o.body); bodies.push(b);
+    if (b.response_format) return { ok: false, status: 400, text: async () => 'Unsupported parameter: response_format' };
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '[{"idx":0,"text":"да"}]' } }] }) };
+  };
+  const r = await A.translateLines({ ai: 'openai', aimodel: 'gpt-4o-mini', key: 'k', aiGap: 0 }, [{ text: 'yes' }], 'русский');
+  ok(bodies.length === 2 && !bodies[1].response_format && r[0] === 'да', 'response_format: откат на запрос без него');
+}
+
+/* [8] idx в ответе модели валидируется, массив остаётся массивом */
+{
+  const A = await import('../js/ai.js');
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '[{"idx":0,"text":"Один"},{"idx":"x","text":"мусор"},{"idx":99,"text":"вне"},"строка"]' } }] }) });
+  const r = await A.translateLines({ ai: 'openai', aimodel: 'gpt-4o-mini', key: 'k', aiGap: 0 }, [{ text: 'a' }, { text: 'b' }, { text: 'c' }], 'русский');
+  ok(Array.isArray(r) && r.length === 3, 'translateLines: длина результата = длина входа');
+  ok(JSON.stringify(Object.keys(r)) === '["0","1","2"]', 'translateLines: мусорный idx не создаёт строковых ключей');
+  ok(r[0] === 'Один' && r[1] === null && r[2] === null, 'translateLines: непригодные ответы отброшены');
+  ok(A.countTranslated(r) === 1, 'countTranslated: честный счётчик переведённых');
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'не JSON' } }] }) });
+  let msg = '';
+  try { await A.translateLines({ ai: 'openai', aimodel: 'gpt-4o-mini', key: 'k', aiGap: 0 }, [{ text: 'a' }], 'русский'); } catch (e) { msg = e.message; }
+  ok(/не JSON-массив: не JSON/.test(msg), 'translateLines: внятная ошибка вместо [object Object]');
+}
+
+/* [14, 15, 16] Edge-TTS: заголовок, xml:lang, локали, запрещённый UA */
+{
+  const V = await import('../js/voices.js');
+  ok(V.voiceLocale('ru-RU-DmitryNeural') === 'ru-RU', 'voiceLocale: ru-RU');
+  ok(V.voiceLocale('ja-JP-NanamiNeural') === 'ja-JP', 'voiceLocale: ja-JP');
+  ok(V.voiceLocale('broken') === 'en-US', 'voiceLocale: мусор → en-US');
+  ok(/xml:lang='ru-RU'/.test(V.SSML('ru-RU-DmitryNeural', 'Привет')), 'SSML: xml:lang из голоса (было жёстко en-US)');
+  ok(/xml:lang='ja-JP'/.test(V.SSML('ja-JP-NanamiNeural', 'やあ')), 'SSML: японский голос → ja-JP');
+  ok(V.normLocale('zh-Hans-CN') === 'zh-CN', 'normLocale: zh-Hans-CN → zh-CN');
+  ok(V.normLocale('ca-ES-valencia') === 'ca-ES', 'normLocale: ca-ES-valencia → ca-ES');
+  ok(V.normLocale('es-419') === 'es-419', 'normLocale: es-419 сохранён');
+  V.registerFetchedVoices([{ ShortName: 'zh-CN-ProbeNeural', Locale: 'zh-Hans-CN', Gender: 'Female' }]);
+  ok(V.voicesForLang('zh-CN').some(v => v.id === 'zh-CN-ProbeNeural'), 'голос с zh-Hans-CN попадает в фильтр zh-CN');
+  const vs = fs.readFileSync(new URL('../js/voices.js', import.meta.url), 'utf8');
+  ok(!/'User-Agent':/.test(vs), 'voices.js: User-Agent не передаётся в fetch (браузер его всё равно выбросил бы)');
+  ok(!/nowEdgeString\(\)Z/.test(vs), 'voices.js: убран лишний Z в X-Timestamp');
+}
+
+/* [11] YOLO: сессия и байты модели не перечитываются на каждую страницу */
+{
+  const yolo = fs.readFileSync(new URL('../js/yolo.js', import.meta.url), 'utf8');
+  ok(/_sessionId === modelId/.test(yolo) && /invalidateSession/.test(yolo), 'yolo.js: InferenceSession кэшируется между страницами');
+  ok(!/InferenceSession\.create\(cached/.test(yolo), 'yolo.js: сессия не создаётся заново из кэша на каждый вызов');
+  ok(/:meta/.test(yolo), 'yolo.js: размер модели хранится отдельной записью (статус не читает 108МБ)');
+  ok(/idbDel\(metaKey/.test(yolo), 'yolo.js: удаление модели чистит и метазапись');
+}
+
+/* [17] Живой список моделей реально попадает в каталог */
+{
+  const A = await import('../js/ai.js');
+  const n0 = A.provider('pollinations').models.length;
+  const added = A.mergeFreeModels('pollinations', ['openai', 'probe-model-x', 'probe-model-x', '', 42]);
+  ok(added === 1 && A.provider('pollinations').models.length === n0 + 1, 'mergeFreeModels: новая модель добавлена один раз, мусор отброшен');
+  ok(A.modelMeta('pollinations', 'probe-model-x').nokey === true && A.modelMeta('pollinations', 'probe-model-x').free === true,
+    'mergeFreeModels: новая модель помечена как бесплатная и без ключа');
+  const mui = fs.readFileSync(new URL('../js/modelsui.js', import.meta.url), 'utf8');
+  ok(/mergeFreeModels\('pollinations', list\)/.test(mui) && /invalidateModelCache/.test(mui), 'modelsui.js: кнопка обновления пишет в каталог и сбрасывает кэш');
+}
+
+/* [18, 19, 20, 21] Утечки URL, custom в селекте, дешёвое сохранение, таймлайн */
+{
+  const app = fs.readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
+  const appCode = codeOnly(app);
+  ok(!/musicUrl/.test(appCode), 'app.js: мёртвый musicUrl удалён (он только терял objectURL)');
+  ok(/URL\.revokeObjectURL\(c\.url\)/.test(appCode) && /function delClip[\s\S]{0,400}autoSaveTimer\(\)/.test(appCode),
+    'app.js: удаление нарезки освобождает URL и сохраняется');
+  ok(/projectForStore/.test(appCode) && !/structuredClone\(project\)/.test(appCode),
+    'app.js: сохранение не делает глубокую копию всех File/Blob (сотни МБ за автосейв)');
+  ok(/value: 'custom'/.test(appCode), 'app.js: «Свой API» есть в селекте провайдера');
+  ok(/measureTrimmedDuration/.test(appCode), 'app.js: длительность озвучки меряется по обрезанному куску (таймлайн совпадает со звуком)');
+  const E2 = await import('../js/engine.js');
+  ok(E2.TRIM && E2.TRIM.threshold === 0.012, 'engine.js: параметры обрезки вынесены в общий TRIM');
+  const eng = codeOnly(fs.readFileSync(new URL('../js/engine.js', import.meta.url), 'utf8'));
+  ok(!/trimSilence\(src, buf\.sampleRate, \{ threshold: 0\.012/.test(eng), 'engine.js: обрезка тишины читает TRIM, а не зашитый литерал');
+  ok(/project\.settings = settings/.test(appCode), 'app.js: project.settings выставляется при старте (иначе таймлайн строится по умолчанию)');
 }
 
 console.log(fails ? `\n${fails} FAILURES` : '\nALL PASS');

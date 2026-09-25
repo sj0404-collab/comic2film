@@ -94,10 +94,27 @@ export const EDGE_VOICES = [
 ];
 
 const extra = new Map(); // путь — страна из полного списка сервера
+
+/* Локаль кодировки в канонический вид: сервер отдаёт 'zh-Hans-CN', 'ca-ES-valencia',
+ * 'es-419', а voicesForLang() ищет по префиксу 'zh-CN'. Без нормализации
+ * половина загруженных голосов не попадала ни в один языковой фильтр. */
+export function normLocale(loc, fallback) {
+  const raw = String(loc || '').replace(/_/g, '-');
+  const parts = raw.split('-').filter(Boolean);
+  if (!parts.length) return fallback || '';
+  const lang = parts[0].toLowerCase();
+  const region = parts.slice(1).find(p => /^[A-Za-z]{2}$/.test(p) || /^[0-9]{3}$/.test(p));
+  return region ? lang + '-' + region.toUpperCase() : lang;
+}
+
 export function registerFetchedVoices(list) {
   for (const v of list || []) {
     if (v.ShortName && /Neural$/.test(v.ShortName)) {
-      extra.set(v.ShortName, { id: v.ShortName, lang: (v.Locale || v.ShortName.slice(0, 5)), gender: (v.Gender || '').toLowerCase().startsWith('f') ? 'f' : 'm' });
+      extra.set(v.ShortName, {
+        id: v.ShortName,
+        lang: normLocale(v.Locale || v.ShortName.slice(0, 5), 'en-US'),
+        gender: (v.Gender || '').toLowerCase().startsWith('f') ? 'f' : 'm',
+      });
     }
   }
 }
@@ -113,13 +130,17 @@ export function voicesForLang(langPrefix) {
 }
 export function voiceById(id) { return allVoices().find(v => v.id === id) || null; }
 
-/* Полный список с сервера Microsoft (работает без ключа) */
+/* Полный список с сервера Microsoft (работает без ключа).
+ * User-Agent сюда НЕ передаётся: это запрещённое имя заголовка в fetch,
+ * браузер молча его выбрасывает — спуфинг Chromium был мёртвым кодом.
+ * Идентичность обеспечивается Sec-MS-GEC. */
 export async function fetchVoicesFromMicrosoft() {
   const token = await secMsToken();
   const url = `https://${BASE}/voices/list?trustedclienttoken=${TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${token}&Sec-MS-GEC-Version=1-${CHROMIUM}`;
-  const r = await fetch(url, { headers: { 'User-Agent': `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROMIUM.split('.')[0]}.0.0.0 Safari/537.36 Edg/${CHROMIUM.split('.')[0]}.0.0.0`, 'Accept-Language': 'en-US,en;q=0.9' } });
+  const r = await fetch(url, { headers: { 'Accept-Language': 'en-US,en;q=0.9' } });
   if (!r.ok) throw new Error('voices/list ' + r.status);
   const list = await r.json();
+  if (!Array.isArray(list)) throw new Error('voices/list: неожиданный формат ответа');
   registerFetchedVoices(list);
   return list;
 }
@@ -129,14 +150,23 @@ async function secMsToken() { return sha256HexBrowser(secMsgGecValue(Date.now())
 /* ================================================================
  * Синтез Edge-TTS
  * ================================================================ */
-function SSML(voice, text, { pitch = '+0Hz', rate = '+0%', volume = '+0%', style } = {}) {
+/* Локаль по id голоса: 'ru-RU-DmitryNeural' -> 'ru-RU'. */
+export function voiceLocale(voice) {
+  const m = /^\s*([a-z]{2,3})-([A-Za-z]{2}|[0-9]{3})\b/.exec(String(voice || ''));
+  return m ? m[1].toLowerCase() + '-' + m[2].toUpperCase() : 'en-US';
+}
+
+export function SSML(voice, text, { pitch = '+0Hz', rate = '+0%', volume = '+0%', style } = {}) {
   const esc = ssmlEscape(text);
+  const lang = voiceLocale(voice);
   const p = `<prosody pitch='${pitch}' rate='${rate}' volume='${volume}'>${esc}</prosody>`;
   if (style) {
-    return `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xmlns:mstts='http://www.w3.org/2001/mstts' xml:lang='en-US'>` +
+    return `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xmlns:mstts='http://www.w3.org/2001/mstts' xml:lang='${lang}'>` +
       `<voice name='${voice}'><mstts:express-as style='${style}' styledegree='1'>${p}</mstts:express-as></voice></speak>`;
   }
-  return `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>` +
+  // xml:lang берётся из голоса: раньше он был жёстко en-US, и русские/
+  // японские голоса произносились с англоязычной интонацией
+  return `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${lang}'>` +
     `<voice name='${voice}'>${p}</voice></speak>`;
 }
 
@@ -175,11 +205,12 @@ export async function edgeTTSSynth(text, { voice = 'ru-RU-DmitryNeural', pitch =
 
     ws.onerror = () => fail(new Error('Edge-TTS: сеть недоступна или сервер не ответил'));
     ws.onopen = () => {
+      // X-Timestamp в обоих сообщениях — один и тот же корректный формат
       ws.send(`X-Timestamp:${nowEdgeString()}\r\n` +
         `Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n` +
         `{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"true"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n`);
       ws.send(`X-RequestId:${requestId}\r\nContent-Type:application/ssml+xml\r\n` +
-        `X-Timestamp:${nowEdgeString()}Z\r\nPath:ssml\r\n\r\n` +
+        `X-Timestamp:${nowEdgeString()}\r\nPath:ssml\r\n\r\n` +
         SSML(voice, text, { pitch, rate, volume, style }));
     };
     ws.onmessage = (ev) => {

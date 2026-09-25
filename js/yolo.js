@@ -53,9 +53,15 @@ async function ensureOrt() {
 function modelKey(modelId) {
   return 'model:bubbles:' + modelId;
 }
+/* Размер модели храним отдельной записью: иначе проверка «скачана ли» читала
+ * из IndexedDB все 108 МБ только ради byteLength. */
+function metaKey(modelId) {
+  return modelKey(modelId) + ':meta';
+}
 
 export function setYoloModel(modelId) {
   if (YOLO_MODELS[modelId] || modelId === 'custom') {
+    if (_currentModelId !== modelId) invalidateSession();
     _currentModelId = modelId;
   }
 }
@@ -68,12 +74,20 @@ export function getModelInfo(modelId) {
   return YOLO_MODELS[modelId] || null;
 }
 
-/** Статус скачанной модели (текущей). */
+/** Статус скачанной модели (текущей) — без чтения самих 108 МБ. */
 export async function bubbleModelStatus() {
+  const id = _currentModelId;
   try {
-    const b = await idbGet(modelKey(_currentModelId));
-    return b ? { ready: true, bytes: b.byteLength, modelId: _currentModelId } : { ready: false, bytes: 0, modelId: _currentModelId };
-  } catch (e) { return { ready: false, bytes: 0, modelId: _currentModelId }; }
+    const meta = await idbGet(metaKey(id));
+    if (meta && meta.bytes) return { ready: true, bytes: meta.bytes, modelId: id };
+    // метазаписи нет (старые установки) — проверяем сами байты один раз
+    const b = await idbGet(modelKey(id));
+    if (b && b.byteLength) {
+      await idbSet(metaKey(id), { bytes: b.byteLength, at: Date.now() });
+      return { ready: true, bytes: b.byteLength, modelId: id };
+    }
+    return { ready: false, bytes: 0, modelId: id };
+  } catch (e) { return { ready: false, bytes: 0, modelId: id }; }
 }
 
 export function bubbleModelTargetBytes(modelId = _currentModelId) {
@@ -82,17 +96,25 @@ export function bubbleModelTargetBytes(modelId = _currentModelId) {
 }
 
 /** Удалить локальную копию текущей модели. */
-export async function bubbleModelClear() { await idbDel(modelKey(_currentModelId)); }
+export async function bubbleModelClear() {
+  invalidateSession();
+  await idbDel(modelKey(_currentModelId));
+  await idbDel(metaKey(_currentModelId));
+}
 
-/** Скачать модель (с прогрессом) и вернуть [InferenceSession, bytes]. */
-export async function downloadBubbleModel(onProgress, modelId = _currentModelId) {
-  const ort = await ensureOrt();
+/* Сессия ONNX кэшируется: раньше на каждую страницу заново читались 108 МБ
+ * из IndexedDB и создавался новый InferenceSession (на 100 страницах это
+ * 10.8 ГБ чтения и минуты на пересборку сессии). */
+let _session = null;
+let _sessionId = null;
+
+function invalidateSession() { _session = null; _sessionId = null; }
+
+/** Скачать байты модели (или взять уже скачанные). */
+async function modelBytes(modelId, onProgress) {
+  const cached = await idbGet(modelKey(modelId));
+  if (cached && cached.byteLength) return cached;
   const model = YOLO_MODELS[modelId];
-  const key = modelKey(modelId);
-  const cached = await idbGet(key);
-  if (cached && cached.byteLength) {
-    return [await ort.InferenceSession.create(cached, { executionProviders: ['wasm'] }), cached];
-  }
   if (!model || !model.url) throw new Error('модель ' + modelId + ': не задан URL');
   const r = await fetch(model.url);
   if (!r.ok) throw new Error('модель ' + modelId + ': HTTP ' + r.status);
@@ -110,8 +132,32 @@ export async function downloadBubbleModel(onProgress, modelId = _currentModelId)
   const bytes = new Uint8Array(got);
   let off = 0;
   for (const c of chunks) { bytes.set(c, off); off += c.length; }
-  await idbSet(key, bytes);
-  const ses = await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] });
+  await idbSet(modelKey(modelId), bytes);
+  await idbSet(metaKey(modelId), { bytes, version: Date.now() });
+  return bytes;
+}
+
+/** Сессия для модели (создаётся один раз). */
+async function getSession(ort, modelId, onProgress, onModel) {
+  if (_session && _sessionId === modelId) return _session;
+  const known = await bubbleModelStatus();
+  let bytes;
+  if (known.ready) {
+    bytes = await idbGet(modelKey(modelId));
+  } else {
+    if (onModel) onModel();
+    bytes = await modelBytes(modelId, onProgress);
+  }
+  _sessionId = modelId;
+  _session = await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] });
+  return _session;
+}
+
+/** Скачать модель (с прогрессом) и вернуть [InferenceSession, bytes]. */
+export async function downloadBubbleModel(onProgress, modelId = _currentModelId) {
+  const ort = await ensureOrt();
+  const bytes = await modelBytes(modelId, onProgress);
+  const ses = await getSession(ort, modelId, onProgress);
   return [ses, bytes];
 }
 
@@ -195,15 +241,7 @@ function nms(dets) {
 export async function detectBubbles(img, { onProgress, onModel } = {}) {
   const ort = await ensureOrt();
   updateModelParams(_currentModelId);
-  const key = modelKey(_currentModelId);
-  const cached = await idbGet(key);
-  let ses, bytes = cached;
-  if (bytes && bytes.byteLength) {
-    ses = await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] });
-  } else {
-    if (onModel) onModel();
-    [ses] = await downloadBubbleModel(onProgress, _currentModelId);
-  }
+  const ses = await getSession(ort, _currentModelId, onProgress, onModel);
   const { data, ratio, dx, dy } = letterbox(img, _imgsz);
   const W = img.naturalWidth || img.width;
   const H = img.naturalHeight || img.height;

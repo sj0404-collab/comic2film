@@ -5,13 +5,15 @@
 
 import {
   PROVIDERS, provider, modelMeta, MODEL_HEALTH, probeModel, refreshFreeModels,
-  providerKeyUrl, isOrchestrator,
+  providerKeyUrl, isOrchestrator, mergeFreeModels,
 } from './ai.js';
 import { toast } from './util.js';
 
 const $ = (id) => document.getElementById(id);
 
 let flatCache = null;
+/** Сброс кэша плоского списка: после подмешивания живых моделей он устарел. */
+export function invalidateModelCache() { flatCache = null; }
 function flatModels() {
   if (flatCache) return flatCache;
   const rows = [];
@@ -406,8 +408,13 @@ export function openModelPicker({ settings, onSelect } = {}) {
     fillChips(); fillTabs(); qualSel.value = 'all';
     statusEl.textContent = 'Обновляю список моделей без ключа (Pollinations)…';
     const list = await refreshFreeModels();
-    statusEl.textContent = 'Моделей без ключа (Pollinations): ' + list.length + ' (' + list.join(', ') + ')';
-    toast('Моделей без ключа: ' + list.join(', '));
+    // список обязан попасть в каталог, иначе кнопка только показывала тост
+    const added = mergeFreeModels('pollinations', list);
+    invalidateModelCache();
+    statusEl.textContent = 'Моделей без ключа (Pollinations): ' + list.length +
+      (added ? ' · добавлено в каталог: ' + added : ' · новых нет') +
+      ' (' + list.slice(0, 12).join(', ') + (list.length > 12 ? ', …' : '') + ')';
+    toast('Моделей без ключа: ' + list.length + (added ? ' (+' + added + ')' : ''));
     render();
   }
 

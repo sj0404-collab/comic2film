@@ -3,7 +3,7 @@
  * (MP4/GIF). Плюс экспорт аудио-дорожки. */
 
 import {
-  estimatePauseMs, trimSilence, download, fmtDur, loadImage, fmtBytes,
+  trimSilence, download, fmtDur, loadImage, fmtBytes,
 } from './util.js';
 
 /* ffmpeg.wasm без сборщика: только ESM-дистрибутив.
@@ -18,10 +18,45 @@ const FF_ESM = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/ind
 const FF_WORKER = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/worker.js';
 const FF_CORE_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
 
+/* Параметры обрезки тишины — единый источник истины для рендера и для
+ * измерения длительности озвучки (иначе таймлайн считает по полному блобу,
+ * а звучит обрезанный кусок, и реплики расходятся с картинкой). */
+export const TRIM = { threshold: 0.012, margin: 0.05, minDur: 0.25 };
+
 export function estimateSpeakDur(text) {
   const t = String(text || '');
   if (!t.trim()) return 0;
   return Math.max(1.1, Math.min(14, t.length / 13 + 0.55)) + (/\s/.test(t) ? 0.15 : 0);
+}
+
+/* Длительность того, что реально прозвучит: блоб с обрезанной по краям
+ * тишиной. Возвращает null, если декодировать не удалось. */
+export async function measureTrimmedDuration(actx, blob) {
+  try {
+    const buf = await actx.decodeAudioData(await blob.arrayBuffer());
+    const ch = buf.getChannelData(0);
+    const { start, end } = trimSilence(ch, buf.sampleRate, TRIM);
+    const dur = end > start ? (end - start) / buf.sampleRate : buf.duration;
+    return dur > 0.05 ? Math.max(TRIM.minDur, dur) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/* Громкость роли. Слайдер пишет volumeNum (100 = единичная громкость),
+ * а строка вида '+0%' теряла знак и превращалась в 0.9. Приоритет у числа,
+ * строка — только для старых проектов. */
+export function roleGain(role) {
+  if (!role) return 1;
+  let pct = null;
+  if (typeof role.volumeNum === 'number' && isFinite(role.volumeNum)) {
+    pct = role.volumeNum;
+  } else {
+    const m = /^\s*([+-]?\d+(?:\.\d+)?)\s*%\s*$/.exec(String(role.volume || ''));
+    if (m) pct = 100 + parseFloat(m[1]);
+  }
+  if (pct == null) return 1;
+  return Math.max(0, Math.min(2, pct / 100));
 }
 
 /* ================================================================
@@ -42,8 +77,9 @@ export function buildTimeline(project) {
     t += 0.55; // заезд на страницу
     bubbles.forEach((b, bi) => {
       t += bi === 0 ? 0.25 : gap;
-      let dur = b.audio && b.audio.duration ? b.audio.duration : estimateSpeakDur(b.text);
-      if (b.audio && b.audio.duration) dur = b.audio.duration;
+      // b.audio.duration уже измерена по обрезанному куску (measureTrimmedDuration),
+      // поэтому рамка реплики совпадает с тем, что реально прозвучит.
+      const dur = b.audio && b.audio.duration ? b.audio.duration : estimateSpeakDur(b.text);
       items.push({ page, pi, bubble: b, t, dur, kind: 'line' });
       t += dur;
       t += gap * 0.6;
@@ -66,9 +102,9 @@ async function decodeToBuffer(actx, blob) {
 async function trimmedPlayRange(actx, blob) {
   const buf = await decodeToBuffer(actx, blob);
   const src = buf.getChannelData(0);
-  const { start, end } = trimSilence(src, buf.sampleRate, { threshold: 0.012, margin: 0.05 });
+  const { start, end } = trimSilence(src, buf.sampleRate, TRIM);
   const off = start / buf.sampleRate;
-  const dur = Math.max(0.25, (end - start) / buf.sampleRate);
+  const dur = Math.max(TRIM.minDur, (end - start) / buf.sampleRate);
   return { buffer: buf, offset: off, dur };
 }
 
@@ -256,7 +292,10 @@ async function prepareSession(project, actx, onProgress) {
   const audibles = timeline.filter(i => i.bubble && i.bubble.audio && i.bubble.audio.blob);
   for (let i = 0; i < audibles.length; i++) {
     const it = audibles[i];
-    try { buffers.set(it.bubble.id, await makePartBuffer(actx, it.bubble.audio.blob, true)); }
+    // клипы, нарезанные пользователем, уже без тишины (noTrim) — не режем их
+    // ещё раз, иначе длительность в таймлайне (seg.duration) разойдётся со звуком
+    const noTrim = it.bubble.audio.noTrim === true;
+    try { buffers.set(it.bubble.id, await makePartBuffer(actx, it.bubble.audio.blob, !noTrim)); }
     catch (e) { buffers.set(it.bubble.id, null); }
     onProgress && onProgress((i / Math.max(1, audibles.length)) * 0.25, 'декодирование аудио');
   }
@@ -274,7 +313,7 @@ async function prepareSession(project, actx, onProgress) {
     if (!pb) return;
     const role = project.roles.find(r => r.id === it.bubble.roleId);
     const g = actx.createGain();
-    g.gain.value = clampVol(role && role.volume);
+    g.gain.value = roleGain(role);
     const src = actx.createBufferSource();
     src.buffer = pb.buffer;
     src.connect(g); g.connect(master);
@@ -358,8 +397,6 @@ async function startMusic(actx, settings, master) {
   } catch (e) { return null; }
 }
 
-function clampVol(v) { const n = parseFloat(v); if (isNaN(n)) return 1; return Math.max(0.1, Math.min(2, n / 100 + 0.9)); }
-
 function pickMime() {
   const tries = [
     'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus',
@@ -407,6 +444,13 @@ export async function renderAndRecord(project, opts, onProgress) {
   const settings = project.settings || {};
 
   const actx = new AudioContext();
+  // Без resume() suspended-контекст не двигает currentTime, clock не растёт,
+  // цикл кадров не останавливается и MediaRecorder никогда не завершается.
+  if (actx.state === 'suspended') { try { await actx.resume(); } catch (e) {} }
+  if (actx.state === 'suspended') {
+    try { await actx.close(); } catch (e) {}
+    throw new Error('Браузер не дал запустить AudioContext (нужен жест пользователя — нажмите кнопку ещё раз)');
+  }
   const { timeline, total, master, dest, started, scheduleItem } = await prepareSession(project, actx, onProgress);
   const musicSrc = await startMusic(actx, settings, master);
 
@@ -419,6 +463,9 @@ export async function renderAndRecord(project, opts, onProgress) {
 
   return new Promise((resolve) => {
     const doneP = new Promise((res) => rec.onstop = res);
+    // Страховка: если что-то пойдёт не так (подвисший currentTime, потерянный
+    // элемент таймлайна), рекордер всё равно остановится и промис завершится.
+    const guard = setTimeout(() => { try { rec.stop(); } catch (e) {} }, (total + 20) * 1000);
     const startAll = () => {
       // предзагрузка страниц
       for (const p of project.pages) pageImg(p.url);
@@ -432,7 +479,9 @@ export async function renderAndRecord(project, opts, onProgress) {
         const clock = actx.currentTime - started;
         scheduleAhead(timeline, clock, scheduleItem);
         const item = currentItem(timeline, clock);
-        if (!item) { raf = requestAnimationFrame(onFrame); return; }
+        // currentItem возвращает undefined только на пустом таймлайне; раньше
+        // тут был return без остановки rec — запись висела вечно
+        if (!item) { try { rec.stop(); } catch (e) {} return; }
         const page = item.page;
         const cam = cameraFor(item, clock, { w: page.w || 1, h: page.h || 1 }, { w, h }, settings.zoom || 'smart');
         const img = pageImgSync(page.url);
@@ -451,6 +500,7 @@ export async function renderAndRecord(project, opts, onProgress) {
 
       raf = requestAnimationFrame(onFrame);
       doneP.then(() => {
+        clearTimeout(guard);
         cancelAnimationFrame(raf);
         try { musicSrc && musicSrc.stop(); } catch (e) {}
         const blob = new Blob(chunks, { type: mimeType });
@@ -474,7 +524,8 @@ export async function renderAudioTrack(project, onProgress) {
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     if (it.bubble && it.bubble.audio && it.bubble.audio.blob) {
-      try { buffers.set(it.bubble.id, await makePartBuffer(actx, it.bubble.audio.blob, true)); }
+      const noTrim = it.bubble.audio.noTrim === true;
+      try { buffers.set(it.bubble.id, await makePartBuffer(actx, it.bubble.audio.blob, !noTrim)); }
       catch (e) { buffers.set(it.bubble.id, null); }
     }
     onProgress && onProgress((i / Math.max(1, items.length)) * 0.5, 'декод аудио');
@@ -493,14 +544,17 @@ export async function renderAudioTrack(project, onProgress) {
     const pb = buffers.get(it.bubble ? it.bubble.id : '');
     if (!pb) continue;
     const role = it.bubble && project.roles.find(r => r.id === it.bubble.roleId);
-    mixAdd(pb.buffer, it.t + pb.offset, clampVol(role && role.volume));
+    mixAdd(pb.buffer, it.t + pb.offset, roleGain(role));
   }
   if (settings.musicBlob) {
     try {
       const m = await decodeToBuffer(actx, settings.musicBlob);
       const g = (settings.mvol ?? 15) / 100 * 0.6;
-      // зациклить по длительности
-      let pos = 0; while (pos < total) { mixAdd(m, pos, g); pos += m.duration; }
+      // зациклить по длительности; при duration <= 0 шаг обязан быть > 0,
+      // иначе pos не растёт и цикл не заканчивается никогда
+      const step = m.duration > 0 ? m.duration : (total > 0 ? total : 1);
+      let pos = 0, guard = 0;
+      while (pos < total && guard++ < 10000) { mixAdd(m, pos, g); pos += step; }
     } catch (e) {}
   }
 
