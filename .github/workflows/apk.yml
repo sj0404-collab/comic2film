@@ -85,7 +85,10 @@ jobs:
             echo "Нативная версия: Kotlin + Jetpack Compose, без WebView."
             echo
             echo "Что нового в $VERSION:"
-            git log --no-merges --pretty=format:'* %s' "$(git describe --tags --abbrev=0 2>/dev/null || echo HEAD~20)"..HEAD | head -40
+            # предыдущий тег ищем от родителя HEAD: при пуше тега сам тег иначе
+            # попадёт в диапазон и список изменений выйдет пустым
+            PREV=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo HEAD~20)
+            git log --no-merges --pretty=format:'* %s' "$PREV"..HEAD | head -40
             echo
             if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
               echo "APK (release-signed): voicecomic-$TAG.apk"
