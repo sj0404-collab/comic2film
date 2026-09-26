@@ -49,6 +49,14 @@ class CoreTest {
     }
 
     @Test
+    fun browserUaIsWellFormed() {
+        // на мусорный UA Edge-TTS отвечает 403 — это уже стоило нам нерабочей озвучки
+        val ua = com.voicecomic.app.audio.EdgeTts.BROWSER_UA
+        assertTrue(ua, ua.matches(Regex("^Mozilla/5\\.0 \\(Windows NT 10\\.0.*Chrome/\\d+\\.\\d+\\.\\d+\\.\\d+ .*Edg/\\d+\\.\\d+\\.\\d+\\.\\d+$")))
+        assertTrue("UA не должен содержать GEC-версию дважды", !ua.contains(Gec.CHROMIUM))
+    }
+
+    @Test
     fun ssmlAndLocale() {
         val tts = com.voicecomic.app.audio.EdgeTts(okhttp3.OkHttpClient())
         assertEquals("ru-RU", tts.voiceLocale("ru-RU-DmitryNeural"))

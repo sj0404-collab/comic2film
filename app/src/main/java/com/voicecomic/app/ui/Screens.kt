@@ -681,7 +681,7 @@ fun SettingsScreen(vm: AppViewModel, onPick: (String) -> Unit) {
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 GhostButton("⚡ Проверить", Modifier.weight(1f)) { vm.verifyModel(s.ai, s.aimodel) }
-                GhostButton("🔄 Pollinations", Modifier.weight(1f)) { vm.refreshPollinations() }
+                GhostButton("🔄 Каталог", Modifier.weight(1f)) { vm.refreshCatalog() }
             }
             vm.modelHealth["${s.ai}::${s.aimodel}"]?.let {
                 Text("Статус: $it", fontSize = 12.sp, color = if (it.startsWith("отвечает")) Palette.ok else Palette.bad)
@@ -713,75 +713,45 @@ fun SettingsScreen(vm: AppViewModel, onPick: (String) -> Unit) {
 @Composable
 fun ChatScreen(vm: AppViewModel, onPick: (String) -> Unit) {
     var input by remember { mutableStateOf("") }
-    Column(
-        Modifier
-            .fillMaxSize()
-            .padding(14.dp)
-    ) {
+    Column(Modifier.fillMaxSize().padding(14.dp)) {
         Card(Modifier.weight(1f)) {
             CardTitle("💬 Чат с ИИ")
             Text(
-                "Модель: ${vm.settings.ai} · ${vm.settings.aimodel}",
+                "${vm.settings.ai} · ${vm.settings.aimodel}" +
+                    if (vm.tools.specs().isEmpty()) "" else " · 🔧 ${vm.tools.specs().size} инструментов",
                 fontSize = 12.sp, color = Palette.mut
             )
             RowGap(8)
-            SelectBox(
-                vm.chatSessions.map { "Сессия ${it.takeLast(6)}" }.ifEmpty { listOf("—") },
-                vm.chatSessions.indexOf(vm.chatCurrent).coerceAtLeast(0)
-            ) { i -> vm.selectChatSession(vm.chatSessions[i]) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SelectBox(
+                    vm.chatSessions.map { "Сессия ${it.takeLast(6)}" }.ifEmpty { listOf("—") },
+                    vm.chatSessions.indexOf(vm.chatCurrent).coerceAtLeast(0),
+                    Modifier.weight(1f)
+                ) { i -> vm.selectChatSession(vm.chatSessions[i]) }
+                WidthGap()
+                GhostButton("+") { vm.newChatSession() }
+                GhostButton("🗑") { vm.deleteChatSession() }
+            }
             RowGap(8)
-            LazyColumn(
-                Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (vm.chatMessages.isEmpty()) {
                     item {
-                        EmptyState("Напишите что-нибудь или прикрепите файлы — ИИ ответит в контексте всей вашей работы.")
+                        EmptyState("Напишите или прикрепите файлы — ИИ ответит и может вызвать локальные инструменты (файлы попадут во вкладку «Workspace»).")
                     }
                 }
-                items(vm.chatMessages) { m ->
-                    val who = when (m.role) {
-                        "user" -> "Вы"
-                        "ai" -> "ИИ"
-                        else -> "Ошибка"
-                    }
-                    val bg = when (m.role) {
-                        "user" -> Palette.acc
-                        "ai" -> Palette.panel2
-                        else -> Color(0x33253A4A)
-                    }
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(bg)
-                            .border(1.dp, if (m.role == "err") Palette.bad else Color.Transparent, RoundedCornerShape(12.dp))
-                            .padding(10.dp)
-                    ) {
-                        Text(who, fontSize = 11.sp, color = if (m.role == "user") Color(0xFF06121F) else Palette.mut)
-                        if (m.files.isNotEmpty()) {
-                            m.files.forEach { Text("📎 $it", fontSize = 11.sp, color = Palette.mut) }
-                        }
-                        Text(m.content, fontSize = 14.sp, color = if (m.role == "user") Color(0xFF06121F) else Palette.txt)
-                    }
-                }
-                if (vm.chatTyping) {
-                    item { Text("ИИ печатает…", fontSize = 13.sp, color = Palette.mut) }
-                }
+                items(vm.chatMessages) { m -> ChatBubble(vm, m) }
             }
             if (vm.chatAttach.isNotEmpty()) {
                 RowGap(6)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    vm.chatAttach.forEach { a ->
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(vm.chatAttach) { a ->
                         Text(
                             "📎 ${a.first} ✕",
                             fontSize = 11.sp,
-                            color = Palette.mut,
+                            color = Palette.txt,
                             modifier = Modifier.clickable { vm.chatAttach = vm.chatAttach - a }
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(Palette.bg2)
+                                .background(Palette.panel2)
                                 .padding(horizontal = 8.dp, vertical = 4.dp)
                         )
                     }
@@ -791,13 +761,129 @@ fun ChatScreen(vm: AppViewModel, onPick: (String) -> Unit) {
             Field(input, placeholder = "Сообщение…", singleLine = false) { input = it }
             RowGap(8)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                GhostButton("📎 Файлы") { onPick("chatfiles") }
-                GhostButton("+ Сессия") { vm.newChatSession() }
-                GhostButton("🗑") { vm.deleteChatSession() }
-                PrimaryButton("➤", Modifier.weight(1f)) {
-                    val t = input
-                    input = ""
-                    vm.sendChatWithAttachments(t)
+                GhostButton("📎", Modifier.weight(1f)) { onPick("chatfiles") }
+                if (vm.chatBusy) {
+                    DangerButton("■ Стоп", Modifier.weight(2f)) { vm.stopChat() }
+                } else {
+                    PrimaryButton("➤ Отправить", Modifier.weight(2f)) {
+                        val t = input
+                        input = ""
+                        vm.ensureModelExists()
+                        vm.sendChatWithAttachments(t)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatBubble(vm: AppViewModel, m: com.voicecomic.app.ChatMsg) {
+    val who = when (m.role) {
+        "user" -> "Вы"
+        "ai" -> "ИИ"
+        else -> "Ошибка"
+    }
+    val bg = when (m.role) {
+        "user" -> Palette.acc
+        "ai" -> Palette.panel2
+        else -> Color(0x33253A4A)
+    }
+    val fg = if (m.role == "user") Color(0xFF06121F) else Palette.txt
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(bg)
+            .border(
+                1.dp,
+                when {
+                    m.role == "err" -> Palette.bad
+                    m.role == "ai" -> Palette.line
+                    else -> Color.Transparent
+                },
+                RoundedCornerShape(12.dp)
+            )
+            .padding(10.dp)
+    ) {
+        Text(who, fontSize = 11.sp, color = if (m.role == "user") Color(0xFF06121F) else Palette.mut)
+        if (m.files.isNotEmpty()) {
+            m.files.forEach { Text("📎 $it", fontSize = 11.sp, color = if (m.role == "user") Color(0xFF06121F) else Palette.acc) }
+        }
+        if (m.content.isNotBlank()) Text(m.content, fontSize = 14.sp, color = fg)
+        if (m.reasoning.isNotBlank()) {
+            var open by remember { mutableStateOf(false) }
+            Text(
+                (if (open) "▼ размышления" else "▶ размышления"),
+                fontSize = 11.sp,
+                color = if (m.role == "user") Color(0xFF06121F) else Palette.mut,
+                modifier = Modifier.clickable { open = !open }
+            )
+            if (open) {
+                Text(
+                    m.reasoning.take(4000),
+                    fontSize = 12.sp,
+                    color = if (m.role == "user") Color(0xFF06121F) else Palette.mut
+                )
+            }
+        }
+        m.tools.forEach { t ->
+            Text(
+                (if (t.ok) "🔧 ${t.name}: " else "⚠ ${t.name}: ") + t.summary,
+                fontSize = 11.sp,
+                color = if (m.role == "user") Color(0xFF06121F) else if (t.ok) Palette.ok else Palette.warn
+            )
+        }
+    }
+}
+
+// ---------------- Workspace ----------------
+
+@Composable
+fun WorkspaceScreen(vm: AppViewModel) {
+    val files = remember(vm.workspaceTick) { vm.workspaceFiles() }
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(14.dp)
+    ) {
+        Card {
+            CardTitle("🗂 Workspace — файлы от инструментов ИИ")
+            Muted("Сюда пишут файлы инструменты write и edit, которые вызывает модель в чате. Файлы можно открыть, отправить себе или удалить.")
+            RowGap(8)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GhostButton("🔄 Обновить", Modifier.weight(1f)) { vm.workspaceTick++ }
+                if (files.isNotEmpty()) DangerButton("Очистить", Modifier.weight(1f)) { vm.clearWorkspace(); vm.workspaceTick++ }
+            }
+        }
+        RowGap(14)
+        Card {
+            CardTitle("Файлы (${files.size})")
+            if (files.isEmpty()) {
+                EmptyState("Пока пусто. Попросите ИИ в чате что-нибудь записать — например: «создай файл notes.md с планом сцены».")
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    files.forEach { f ->
+                        val rel = f.relativeTo(vm.workspace.root).path
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Palette.panel2)
+                                .border(1.dp, Palette.line, RoundedCornerShape(10.dp))
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(rel, fontSize = 13.sp, color = Palette.txt, maxLines = 2)
+                                Text("${vm.fmtSize(f.length())} · ${rel.substringAfterLast('.', "файл")}", fontSize = 11.sp, color = Palette.mut)
+                            }
+                            IconButton("▶") { vm.openWorkspaceFile(f) }
+                            IconButton("📤") { vm.shareWorkspaceFile(f) }
+                            IconButton("✕") { vm.deleteWorkspaceFile(f); vm.workspaceTick++ }
+                        }
+                    }
                 }
             }
         }

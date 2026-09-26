@@ -47,11 +47,12 @@ import com.voicecomic.app.ui.ResetDialog
 import com.voicecomic.app.ui.RolesScreen
 import com.voicecomic.app.ui.ScriptScreen
 import com.voicecomic.app.ui.SettingsScreen
+import com.voicecomic.app.ui.WorkspaceScreen
 import kotlinx.coroutines.delay
 
 private val TABS = listOf(
     "📥" to "Импорт", "🎬" to "Сценарий", "💬" to "Чат",
-    "🎭" to "Голоса", "🎞" to "Монтаж", "⚙" to "Опции"
+    "🎭" to "Голоса", "🎞" to "Монтаж", "🗂" to "Файлы", "⚙" to "Опции"
 )
 
 class MainActivity : ComponentActivity() {
@@ -185,6 +186,7 @@ fun AppRoot(vm: AppViewModel, launch: (String) -> Unit) {
                     2 -> ChatScreen(vm) { launch(it) }
                     3 -> RolesScreen(vm) { launch(it) }
                     4 -> RenderScreen(vm)
+                    5 -> WorkspaceScreen(vm)
                     else -> SettingsScreen(vm) { launch(it) }
                 }
             }

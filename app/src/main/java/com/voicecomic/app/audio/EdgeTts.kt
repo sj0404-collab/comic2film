@@ -28,6 +28,14 @@ class EdgeTts(private val client: OkHttpClient) {
 
     companion object {
         private const val HOST = "speech.platform.bing.com"
+
+        /**
+         * User-Agent должен быть настоящим: Edge-TTS отвечает 403 на мусорный UA
+         * (проверено живьёй: Chrome/143.0.3650.75.0.0.0 → 403, Chrome/143.0.0.0 → 101).
+         */
+        const val BROWSER_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
         private const val PATH = "/consumer/speech/synthesize/readaloud"
         private const val OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3"
         private val CLIENT = OkHttpClient.Builder()
@@ -101,8 +109,7 @@ class EdgeTts(private val client: OkHttpClient) {
             "&Sec-MS-GEC-Version=${Gec.GEC_VERSION}"
         val request = Request.Builder().url(url)
             .header("Origin", "https://$HOST")
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/${Gec.CHROMIUM}.0.0.0 Safari/537.36 Edg/${Gec.CHROMIUM}.0.0.0")
+            .header("User-Agent", BROWSER_UA)
             .build()
 
         val audio = ByteArrayOutputStream()
@@ -169,11 +176,14 @@ class EdgeTts(private val client: OkHttpClient) {
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (!done.isCompleted) {
-                    done.completeExceptionally(
-                        IllegalStateException("Edge-TTS: сеть недоступна или сервер не ответил", t)
-                    )
+                // без кода ответа и текста причины диагностировать 403 невозможно
+                val detail = buildString {
+                    append("Edge-TTS: ")
+                    append(response?.code?.let { "HTTP $it" } ?: "сеть недоступна")
+                    val msg = t.message
+                    if (!msg.isNullOrBlank()) append(" — ").append(msg.take(160))
                 }
+                if (!done.isCompleted) done.completeExceptionally(IllegalStateException(detail, t))
             }
         })
 

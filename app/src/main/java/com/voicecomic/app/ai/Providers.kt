@@ -5,6 +5,7 @@ import com.voicecomic.app.data.Settings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import java.io.File
 import kotlinx.serialization.json.Json
 
 @Serializable
@@ -161,6 +162,20 @@ object Providers {
 
     suspend fun loadDevCatalog(context: Context) = withContext(Dispatchers.IO) {
         if (devProviders != null) return@withContext
+        // если в репозитории уже лежит кэш свежего каталога — берём его
+        runCatching {
+            val cache = File(context.filesDir, "models.dev.json")
+            if (cache.exists() && cache.length() > 1000) {
+                val map = LinkedHashMap<String, DevProvider>()
+                for ((pid, v) in json.parseToJsonElement(cache.readText()).let { el ->
+                    val obj = el as kotlinx.serialization.json.JsonObject
+                    obj.mapValues { (_, e) -> json.decodeFromJsonElement(DevProvider.serializer(), e) }
+                }) {
+                    map[pid] = v
+                }
+                if (map.isNotEmpty()) devProviders = map
+            }
+        }
         runCatching {
             val txt = context.assets.open("models.dev.json").bufferedReader().use { it.readText() }
             val map = LinkedHashMap<String, DevProvider>()
@@ -173,6 +188,36 @@ object Providers {
             devProviders = map
         }
     }
+
+    /**
+     * Догружает каталог моделей из сети (models.dev) и кладёт в кэш приложения.
+     * Нужен, когда в зашитом ассете ещё нет свежих моделей.
+     */
+    suspend fun refreshFromNetwork(context: Context, http: okhttp3.OkHttpClient): Int =
+        withContext(Dispatchers.IO) {
+            val req = okhttp3.Request.Builder()
+                .url("https://models.dev/api.json")
+                .header("User-Agent", "voicecomic/gen-models")
+                .build()
+            val txt = http.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext 0
+                resp.body?.string() ?: return@withContext 0
+            }
+            runCatching {
+                val map = LinkedHashMap<String, DevProvider>()
+                for ((pid, v) in json.parseToJsonElement(txt).let { el ->
+                    val obj = el as kotlinx.serialization.json.JsonObject
+                    obj.mapValues { (_, e) -> json.decodeFromJsonElement(DevProvider.serializer(), e) }
+                }) {
+                    map[pid] = v
+                }
+                if (map.isEmpty()) return@withContext 0
+                devProviders = map
+                val cache = File(context.filesDir, "models.dev.json")
+                cache.writeText(txt)
+                map.values.sumOf { it.models.size }
+            }.getOrDefault(0)
+        }
 
     /** Слияние как в ai.js: сначала curated, потом models.dev (пустой endpoint пропускается). */
     fun catalog(): List<Provider> {

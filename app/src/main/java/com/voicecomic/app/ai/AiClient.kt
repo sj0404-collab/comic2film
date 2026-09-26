@@ -28,8 +28,6 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
-data class Msg(val role: String, val content: String)
-
 class AiException(message: String, val status: Int = 0) : Exception(message)
 
 /**
