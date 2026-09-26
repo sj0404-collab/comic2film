@@ -2,7 +2,8 @@ name: Build APK
 
 on:
   push:
-    branches: ['main']
+    # ветка с нативным переносом — пока не влита в main, но собрать подписанный APK надо
+    branches: ['main', 'native-rewrite']
     tags: ['v*']
   workflow_dispatch:
     inputs:
