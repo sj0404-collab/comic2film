@@ -40,8 +40,14 @@ jobs:
         run: node tools/set-version.mjs "${{ inputs.version }}"
 
       - name: Restore release keystore from secrets
-        if: github.event_name != 'pull_request'
+        id: signing
         run: |
+          if [ -z "${{ secrets.STORE_PASSWORD }}" ]; then
+            echo "⚠️ секрет STORE_PASSWORD пуст — подписанную сборку сделать нельзя,"
+            echo "   будет unsigned APK. Верни секрет: gh secret set STORE_PASSWORD"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           mkdir -p keystore
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > keystore/voicecomic-release.jks
           {
@@ -50,16 +56,7 @@ jobs:
             echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}"
             echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}"
           } > keystore.properties
-
-      - name: Verify keystore
-        if: github.event_name != 'pull_request'
-        run: |
-          ls -l keystore
-          file keystore/*.jks
-          # печатаем только алиасы и срок, сами пароли не светим
-          keytool -list -v -keystore keystore/voicecomic-release.jks \
-            -storepass "${{ secrets.STORE_PASSWORD }}" 2>&1 \
-            | grep -E 'Alias name|Entry type|Certificate fingerprint|Valid from' | head -10
+          echo "signed=true" >> "$GITHUB_OUTPUT"
 
       - name: Build release APK
         run: ./gradlew :app:assembleRelease --no-daemon
@@ -90,7 +87,11 @@ jobs:
             echo "Что нового в $VERSION:"
             git log --no-merges --pretty=format:'* %s' "$(git describe --tags --abbrev=0 2>/dev/null || echo HEAD~20)"..HEAD | head -40
             echo
-            echo "APK (release-signed): voicecomic-$TAG.apk"
+            if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
+              echo "APK (release-signed): voicecomic-$TAG.apk"
+            else
+              echo "APK (UNSIGNED — секрет STORE_PASSWORD пуст): voicecomic-$TAG.apk"
+            fi
           } > notes.md
           gh release create "$TAG" "voicecomic-$TAG.apk" \
             --target "${GITHUB_SHA}" \
