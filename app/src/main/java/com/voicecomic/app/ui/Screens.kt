@@ -34,6 +34,7 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -841,6 +842,11 @@ private fun ChatBubble(vm: AppViewModel, m: com.voicecomic.app.ChatMsg) {
 
 @Composable
 fun WorkspaceScreen(vm: AppViewModel) {
+    var toolName by remember { mutableStateOf("") }
+    var toolKind by remember { mutableIntStateOf(0) }
+    var toolDesc by remember { mutableStateOf("") }
+    var toolParams by remember { mutableStateOf("") }
+    var toolSpec by remember { mutableStateOf("") }
     val files = remember(vm.workspaceTick) { vm.workspaceFiles() }
     Column(
         Modifier
@@ -856,6 +862,74 @@ fun WorkspaceScreen(vm: AppViewModel) {
                 GhostButton("🔄 Обновить", Modifier.weight(1f)) { vm.workspaceTick++ }
                 if (files.isNotEmpty()) DangerButton("Очистить", Modifier.weight(1f)) { vm.clearWorkspace(); vm.workspaceTick++ }
             }
+        }
+        RowGap(14)
+        Card {
+            CardTitle("🔧 Свои инструменты")
+            Muted("Свои инструменты уходят модели так же, как встроенные. HTTP — чтобы дёрнуть API (GitHub, свой сервер, раннер); SHELL — команда в папке workspace. Параметры пишутся по одному в строке: имя | описание | opt.")
+            RowGap(8)
+            Field(toolName, placeholder = "имя инструмента, например github_runs") { toolName = it }
+            RowGap(6)
+            Segmented(listOf("HTTP", "SHELL"), toolKind) { toolKind = it }
+            RowGap(6)
+            Field(toolDesc, placeholder = "что делает (это видит модель)") { toolDesc = it }
+            RowGap(6)
+            Field(toolParams, placeholder = "параметры, по одному в строке:\nowner | владелец репозитория\nrepo | имя репозитория", singleLine = false) { toolParams = it }
+            RowGap(6)
+            Field(
+                toolSpec,
+                placeholder = if (toolKind == 0) "GET https://api.github.com/repos/{{owner}}/{{repo}}/actions/runs\n(тело запроса — ниже, если нужно)" else "gh run list --repo {{owner}}/{{repo}}",
+                singleLine = false
+            ) { toolSpec = it }
+            RowGap(8)
+            PrimaryButton("+ Добавить инструмент", Modifier.fillMaxWidth()) {
+                vm.addCustomTool(toolName, if (toolKind == 0) "http" else "shell", toolDesc, toolParams, toolSpec)
+                toolName = ""; toolDesc = ""; toolParams = ""; toolSpec = ""
+                vm.workspaceTick++
+            }
+            val custom = remember(vm.workspaceTick) { vm.customTools() }
+            if (custom.isNotEmpty()) {
+                RowGap(10)
+                custom.forEach { t ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Palette.panel2)
+                            .border(1.dp, Palette.line, RoundedCornerShape(10.dp))
+                            .padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("${t.name} · ${t.kind.uppercase()}", fontSize = 13.sp, color = Palette.txt)
+                            Text(
+                                t.params.joinToString(", ") { it.name },
+                                fontSize = 11.sp, color = Palette.mut
+                            )
+                        }
+                        IconButton("✕") { vm.deleteCustomTool(t.id); vm.workspaceTick++ }
+                    }
+                }
+            }
+        }
+        RowGap(14)
+        Card {
+            CardTitle("🎓 Свои навыки")
+            Muted("Навык — это текстовая инструкция для модели. Файл .md из хранилища попадает в список, и модель может вызвать его инструментом skill.")
+            RowGap(8)
+            GhostButton("📎 Добавить навык (.md)", Modifier.fillMaxWidth()) { vm.onPickSkill() }
+            val skills = remember(vm.workspaceTick) { vm.userSkills() }
+            if (skills.isNotEmpty()) {
+                RowGap(8)
+                skills.forEach { name ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("📘 $name", fontSize = 13.sp, color = Palette.txt, modifier = Modifier.weight(1f))
+                        IconButton("✕") { vm.deleteSkill(name); vm.workspaceTick++ }
+                    }
+                }
+            }
+            RowGap(6)
+            Muted("Встроенные навыки: scenario, voices, render.")
         }
         RowGap(14)
         Card {

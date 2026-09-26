@@ -116,8 +116,10 @@ class Workspace(context: Context) {
 
     fun delete(rel: String): Boolean = resolve(rel)?.delete() ?: false
 
+    /** Чистит рабочие файлы, но сохраняет папку навыков. */
     fun clear() {
         files().forEach { it.delete() }
-        root.listFiles()?.filter { it.isDirectory }?.forEach { it.deleteRecursively() }
+        root.listFiles()?.filter { it.isDirectory && it.name != ".skills" }?.forEach { it.deleteRecursively() }
+        skillsDir.mkdirs()
     }
 }

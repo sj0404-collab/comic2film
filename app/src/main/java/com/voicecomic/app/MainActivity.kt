@@ -81,6 +81,7 @@ class MainActivity : ComponentActivity() {
             "clips" -> vm.importClips(uris)
             "project" -> vm.importProjectJson(uris.first())
             "chatfiles" -> vm.attachChatFiles(uris, ::displayName)
+            "skill" -> uris.firstOrNull()?.let { vm.addSkillFromFile(it, ::displayName) }
             else -> {
                 val names = uris.associateWith { displayName(it) }
                 val pages = uris.filter { u ->
@@ -105,6 +106,7 @@ class MainActivity : ComponentActivity() {
             "music" -> pickFiles.launch(arrayOf("audio/*", "video/*"))
             "clips" -> pickFiles.launch(arrayOf("audio/*", "video/*", "application/*"))
             "chatfiles" -> pickFiles.launch(arrayOf("image/*", "text/*", "application/json", "*/*"))
+            "skill" -> pickFiles.launch(arrayOf("text/markdown", "text/plain", "text/*"))
             else -> pickFiles.launch(arrayOf("*/*"))
         }
     }

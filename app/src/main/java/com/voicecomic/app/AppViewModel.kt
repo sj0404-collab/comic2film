@@ -1136,6 +1136,87 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     var workspaceTick by mutableIntStateOf(0)
 
+    // ---------- пользовательские инструменты и навыки ----------
+
+    fun customTools(): List<com.voicecomic.app.chat.CustomTool> = tools.registry().tools()
+
+    fun deleteCustomTool(id: String) {
+        tools.registry().delete(id)
+        say("Инструмент удалён")
+    }
+
+    /**
+     * Создаёт пользовательский инструмент. kind=http — запрос к API (например GitHub),
+     * kind=shell — команда через sh в папке workspace. Параметры уходят модели как схема.
+     */
+    fun addCustomTool(
+        name: String,
+        kind: String,
+        description: String,
+        paramLines: String,
+        spec: String
+    ) {
+        val clean = name.trim().replace(Regex("[^A-Za-z0-9_-]"), "_")
+        if (clean.isEmpty()) {
+            say("Имя инструмента не задано", "err")
+            return
+        }
+        val params = paramLines.split('\n')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .map { line ->
+                val p = line.split('|', ':').map { it.trim() }
+                com.voicecomic.app.chat.ToolParam(
+                    name = p.getOrNull(0).orEmpty(),
+                    description = p.getOrNull(1).orEmpty(),
+                    required = p.getOrNull(2)?.lowercase() != "opt"
+                )
+            }
+            .filter { it.name.isNotEmpty() }
+        val tool = com.voicecomic.app.chat.CustomTool(
+            id = newId(),
+            name = clean,
+            description = description.trim().ifEmpty { "пользовательский инструмент" },
+            kind = kind,
+            params = params,
+            method = if (kind == "http") spec.substringBefore(' ').uppercase().ifEmpty { "GET" } else "GET",
+            url = if (kind == "http") spec.substringAfter(' ', "").trim().ifEmpty { spec.trim() } else "",
+            body = if (kind == "http") bodyFrom(spec) else "",
+            command = if (kind == "shell") spec.trim() else ""
+        )
+        tools.registry().upsert(tool)
+        say("Инструмент $clean добавлен: ${params.size} параметров")
+    }
+
+    private fun bodyFrom(spec: String): String {
+        val i = spec.indexOf('\n')
+        return if (i > 0) spec.substring(i + 1).trim() else ""
+    }
+
+    fun addSkillFromFile(uri: android.net.Uri, nameOf: (android.net.Uri) -> String) {
+        viewModelScope.launch {
+            val name = nameOf(uri)
+            val text = withContext(Dispatchers.IO) {
+                runCatching {
+                    getApplication<Application>().contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                }.getOrNull()
+            }
+            if (text.isNullOrBlank()) {
+                say("Не удалось прочитать файл навыка", "err")
+            } else {
+                say(tools.registry().addSkill(name, text))
+                workspaceTick++
+            }
+        }
+    }
+
+    fun userSkills(): List<String> = tools.registry().userSkills()
+
+    fun deleteSkill(name: String) {
+        tools.registry().deleteSkill(name)
+        say("Навык удалён")
+    }
+
     fun workspaceFiles(): List<java.io.File> = workspace.files()
 
     fun shareWorkspaceFile(file: java.io.File) {
@@ -1171,7 +1252,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     var importModePages by mutableStateOf(true)
 
-    /** Событие «нужно открыть системный выбор файлов»: pages | clips | music | project | chatfiles. */
+    /** Событие «нужно открыть системный выбор файлов»: pages | clips | music | project | chatfiles | skill. */
     var pickRequest by mutableStateOf<String?>(null)
 
     var confirmReset by mutableStateOf(false)
@@ -1193,6 +1274,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onPickMusic() {
         pickRequest = "music"
+    }
+
+    fun onPickSkill() {
+        pickRequest = "skill"
     }
 
     fun setModelFor(pid: String, mid: String) {
