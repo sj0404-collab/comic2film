@@ -74,13 +74,15 @@ jobs:
             TAG="${{ github.ref_name }}"
           fi
           mv "$APK" "voicecomic-$TAG.apk"
-          NOTES=$(git log --no-merges --pretty=format:'* %s' "$(git describe --tags --abbrev=0 2>/dev/null || echo HEAD~20)"..HEAD | head -40)
+          {
+            echo "Нативная версия: Kotlin + Jetpack Compose, без WebView."
+            echo
+            echo "Что нового в $VERSION:"
+            git log --no-merges --pretty=format:'* %s' "$(git describe --tags --abbrev=0 2>/dev/null || echo HEAD~20)"..HEAD | head -40
+            echo
+            echo "APK (release-signed): voicecomic-$TAG.apk"
+          } > notes.md
           gh release create "$TAG" "voicecomic-$TAG.apk" \
             --target "${GITHUB_SHA}" \
             --title "VoiceComic $VERSION — нативный Android" \
-            --notes "Нативная версия: Kotlin + Jetpack Compose, без WebView.
-
-**Что нового в $VERSION:**
-$NOTES
-
-**APK (release-signed):** voicecomic-$TAG.apk"
+            --notes-file notes.md
