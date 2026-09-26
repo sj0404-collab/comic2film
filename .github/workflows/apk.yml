@@ -51,6 +51,16 @@ jobs:
             echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}"
           } > keystore.properties
 
+      - name: Verify keystore
+        if: github.event_name != 'pull_request'
+        run: |
+          ls -l keystore
+          file keystore/*.jks
+          # печатаем только алиасы и срок, сами пароли не светим
+          keytool -list -v -keystore keystore/voicecomic-release.jks \
+            -storepass "${{ secrets.STORE_PASSWORD }}" 2>&1 \
+            | grep -E 'Alias name|Entry type|Certificate fingerprint|Valid from' | head -10
+
       - name: Build release APK
         run: ./gradlew :app:assembleRelease --no-daemon
 
