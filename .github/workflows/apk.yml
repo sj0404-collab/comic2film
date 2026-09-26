@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Версия релиза (например 1.0.1)'
+        description: 'Версия релиза (например 2.0.0)'
         required: false
         default: ''
 
@@ -20,13 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # заметки релиза собираются из коммитов после прошлого тега
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
+          fetch-depth: 0
 
       - name: Setup JDK
         uses: actions/setup-java@v4
@@ -34,51 +28,36 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
 
-      - name: Install deps
-        run: npm ci
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
 
-      - name: Install Python deps
-        run: |
-          cd backend
-          pip install -r requirements.txt
-
-      - name: Lint + tests
-        run: npm run check && npm test
-
-      - name: Build www
-        run: npm run build:www
-
-      - name: Add Android platform
-        run: npx cap add android
-
-      - name: Sync Capacitor
-        run: npx cap sync android
+      - name: Bump version
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+        run: node tools/set-version.mjs "${{ inputs.version }}"
 
       - name: Restore release keystore from secrets
+        if: github.event_name != 'pull_request'
         run: |
           mkdir -p keystore
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > keystore/voicecomic-release.jks
           {
-            echo 'STORE_FILE=../keystore/voicecomic-release.jks'
-            echo 'STORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}'
-            echo 'KEY_ALIAS=${{ secrets.KEY_ALIAS }}'
-            echo 'KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}'
-          } > android/keystore.properties
-          node tools/patch-signing.mjs
+            echo 'STORE_FILE=keystore/voicecomic-release.jks'
+            echo "STORE_PASSWORD=${{ secrets.STORE_PASSWORD }}"
+            echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}"
+            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}"
+          } > keystore.properties
 
-      - name: Build signed release APK
-        run: cd android && ./gradlew assembleRelease --no-daemon
+      - name: Build release APK
+        run: ./gradlew :app:assembleRelease --no-daemon
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: apk
-          path: android/app/build/outputs/apk/release/*.apk
+          path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
       - name: Create GitHub Release
@@ -86,34 +65,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          APK=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          VERSION=$(grep '^voicecomic.versionName=' gradle.properties | cut -d= -f2)
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             TAG="v${VERSION}"
           else
             TAG="${{ github.ref_name }}"
-            VERSION="${TAG#v}"
           fi
           mv "$APK" "voicecomic-$TAG.apk"
-          # Заметки собираются из коммитов после прошлого тега: зашитый
-          # текст однажды устарел и описывал уже выпущенную версию.
-          PREV=$(git tag --sort=-creatordate | grep -v "^${TAG}$" | head -1 || true)
-          {
-            echo "Сборка в GitHub Actions, коммит \`${GITHUB_SHA:0:7}\`."
-            echo
-            echo "**Что нового в ${VERSION}:**"
-            if [ -n "$PREV" ]; then
-              git log --no-merges --pretty=format:'- %s (%h)' "$PREV"..HEAD
-            else
-              git log --no-merges --pretty=format:'- %s (%h)' | head -30
-            fi
-            echo
-            echo
-            echo "**APK (release-signed, versionName ${VERSION}):** voicecomic-${TAG}.apk"
-            echo "Обновление ставится поверх предыдущей сборки: versionCode растёт монотонно."
-          } > release-notes.md
-          cat release-notes.md
+          NOTES=$(git log --no-merges --pretty=format:'* %s' "$(git describe --tags --abbrev=0 2>/dev/null || echo HEAD~20)"..HEAD | head -40)
           gh release create "$TAG" "voicecomic-$TAG.apk" \
             --target "${GITHUB_SHA}" \
-            --title "VoiceComic ${VERSION}" \
-            --notes-file release-notes.md
+            --title "VoiceComic $VERSION — нативный Android" \
+            --notes "Нативная версия: Kotlin + Jetpack Compose, без WebView.
+
+**Что нового в $VERSION:**
+$NOTES
+
+**APK (release-signed):** voicecomic-$TAG.apk"
