@@ -1,7 +1,7 @@
 /* Чат с ИИ: сессии, сообщения, файловые вложения (без лимитов). */
 
 import { idbGet, idbSet, chatGetSessions, chatSetSessions, chatGetMessages, chatSetMessages, chatDelSession, KEY_SETTINGS } from './store.js';
-import { provider, chat, chatWithImage, modelMeta } from './ai.js';
+import { provider, chat, chatWithImage, modelMeta, answerText } from './ai.js';
 import { openModelPicker } from './modelsui.js';
 
 const LS_CURRENT = 'chat:current';
@@ -117,6 +117,22 @@ function resolveModel() {
   return { provider: S.ai, model: S.aimodel };
 }
 
+/* История режется по MAX_COPY, поэтому срез может начаться с хода ИИ, а ходы
+ * без текста (картинка-only) выше отсекаются — получаются ещё и два одинаковых
+ * соседних хода. Claude и Gemini такие последовательности отвергают (400
+ * «first message must use the user role» / «must alternate»). Приводим историю
+ * к виду, начинающемуся с пользователя, с чередованием ролей. */
+export function mergeTurns(list) {
+  const out = [];
+  for (const m of list) {
+    const last = out[out.length - 1];
+    if (last && last.role === m.role) last.content += '\n\n' + m.content;
+    else out.push({ ...m });
+  }
+  while (out.length && out[0].role !== 'user') out.shift();
+  return out;
+}
+
 async function ask() {
   if (asking) return;
   const input = $('chat-input');
@@ -137,9 +153,10 @@ async function ask() {
     const { provider: pid, model: mid } = resolveModel();
     const chatSettings = { ...S, ai: pid, aimodel: mid };
     const history = messages.filter(m => !m.typing && m.role !== 'err' && m.role !== 'system')
+      .filter(m => typeof m.content === 'string' && m.content.trim())   // пустые ходы ломают некоторые модели
       .filter((m, i, arr) => i >= Math.max(0, arr.length - MAX_COPY));
     const sys = messages.find(m => m.role === 'system');
-    const systemPrompt = 'Ты — помощник пользователя приложения VoiceComic (комиксы → озвученное видео). Отвечай по-русски, коротко и по делу. Пользователь может присылать изображения и файлы: изображения разбирай как страницы манги/комикса, текстовые файлы прочитывай и комментируй.';
+    const systemPrompt = 'Ты — помощник пользователя приложения VoiceComic (комиксы → озвученное видео). Отвечай по-русски, коротко и по делу. Пользователь может присылать изображения и файлы: изображения разбирай как страницы манги/комикса, текстовые файлы прочитывай и комментируй. У тебя нет доступа к файлам проекта, командам и интернету — не обещай создать, изменить или скачать что-либо, отвечай текстом.';
     void sys;
     const files = userMsg.files || [];
     const images = files.filter(f => f.dataURL);
@@ -163,7 +180,7 @@ async function ask() {
 
     const turn = (m) => ({ role: m.role, content: m.content });
     const userTurn = { role: 'user', content: (text || '(без текста)') + attachBlock };
-    const hist = history.filter(m => m !== userMsg).map(turn);
+    const hist = mergeTurns(history.filter(m => m !== userMsg).map(turn));
     let answer;
     if (images.length) {
       answer = await chatWithImage(chatSettings, [
@@ -180,7 +197,10 @@ async function ask() {
     }
     if (skipped) console.warn('не удалось прочитать вложений: ' + skipped);
     messages = messages.filter(m => m !== typing);
-    messages.push({ role: 'ai', content: String(answer), ts: Date.now() });
+    // String(answer) на null/undefined печатал в пузыре слово «null» — ответ
+    // всегда приводим к строке заранее (answerText), а не полагаемся на String().
+    const reply = typeof answer === 'string' ? answer : answerText(answer, 'ИИ');
+    messages.push({ role: 'ai', content: reply, ts: Date.now() });
     const title = (text || (files[0] && files[0].name) || 'Сессия').trim().slice(0, 40);
     if (currentId && sessions.find(sp => sp.id === currentId)) {
       const sp = sessions.find(x => x.id === currentId);

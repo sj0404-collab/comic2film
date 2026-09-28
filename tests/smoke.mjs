@@ -546,6 +546,166 @@ function codeOnly(src) {
   ok(/MAX_ATTACH_BYTES/.test(chat) && /MAX_TOTAL_CHARS/.test(chat), 'chat.js: у вложений есть лимиты размера');
 }
 
+/* [33] чат: «nullnullnull…» и вызовы инструментов (скриншот с телефона)
+ *
+ * Бесплатные keyless-модели zen — агенты: официальный набор builtin-тулов
+ * обязателен для free tier, поэтому на вопросы вроде «создай README» они
+ * отвечают ВЫЗОВОМ ИНСТРУМЕНТА. Релей эти вызовы выбрасывал, клиент рисовал
+ * пустой ответ, а следующим ходом модель сыпала «nullnullnull…». */
+{
+  const A = await import('../js/ai.js');
+  const ai = codeOnly(fs.readFileSync(new URL('../js/ai.js', import.meta.url), 'utf8'));
+  const chat = codeOnly(fs.readFileSync(new URL('../js/chat.js', import.meta.url), 'utf8'));
+
+  ok(A.sanitizeModelText('Папка:nullnullnullnullnullnullnull') === 'Папка:',
+    'ai.js: серия «null» в конце ответа вырезается');
+  ok(A.sanitizeModelText('null null null null') === '', 'ai.js: ответ целиком из «null» становится пустым');
+  ok(A.sanitizeModelText('Обычный ответ: всё в порядке.') === 'Обычный ответ: всё в порядке.',
+    'ai.js: нормальный текст не трогается');
+  ok(A.sanitizeModelText('null') === 'null', 'ai.js: одиночное «null» в тексте не выбрасывается');
+
+  ok(A.textOf([{ type: 'text', text: 'привет' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA' } }]) === 'привет',
+    'ai.js: content-части склеиваются в текст, а не в «[object Object]»');
+  ok(A.textOf(null) === '' && A.textOf(undefined) === '', 'ai.js: null/undefined дают пустую строку, а не «null»');
+
+  let err = null;
+  try { A.answerText([{ functionCall: { name: 'write' } }], 'тест'); } catch (e) { err = e; }
+  ok(!!err && /write/.test(err.message) && /инструмент/.test(err.message) && err.noRetry === true,
+    'ai.js: вызов инструмента → внятная ошибка с именем, без бессмысленных ретраев');
+  err = null;
+  try { A.answerText(null, 'тест'); } catch (e) { err = e; }
+  ok(!!err && /null/.test(err.message) && err.noRetry === true, 'ai.js: content=null больше не превращается в текст «null»');
+  ok(A.answerText([{ type: 'text', text: '  ок  ' }], 'тест') === 'ок', 'ai.js: parts дают текст');
+
+  ok(/msg\.tool_calls/.test(ai) && /throw toolCallsError/.test(ai), 'ai.js: ответ провайдера проверяется на вызовы инструментов');
+  ok(/answerText\(raw, name \+ ' ' \+ model\)/.test(ai), 'ai.js: openAICompat отдаёт приведённый текст, а не сырой content');
+  ok(/if \(e\.noRetry\) throw e;/.test(ai), 'ai.js: разобранный, но негодный ответ не ретраится');
+  ok(!/String\(answer\)/.test(chat) && /answerText\(answer, 'ИИ'\)/.test(chat),
+    'chat.js: ответ не превращается в «null» через String(answer)');
+  ok(/typeof m\.content === 'string' && m\.content\.trim\(\)/.test(chat), 'chat.js: пустые ходы в модель не уходят');
+  ok(/не обещай создать, изменить или скачать/.test(chat), 'chat.js: системный промпт честно говорит, что доступа к файлам нет');
+}
+
+/* [34] relay: вызовы инструментов и настоящий usage больше не теряются */
+{
+  const relay = await import('../relay/zen-relay.mjs');
+  const sse = (...l) => l.join('\n') + '\n';
+  const stream = sse(
+    'data: {"choices":[{"delta":{"content":"Сейчас посмотрю папку"},"finish_reason":null}]}',
+    'data: {"choices":[{"delta":{"content":null,"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read","arguments":""}}]}}]}',
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"filePath\\": "}}]}}]}',
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"/workspace\\"}"}}]}}]}',
+    'data: {"choices":[{"delta":{"content":""},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5957,"completion_tokens":93,"total_tokens":6050}}',
+    'data: [DONE]'
+  );
+  const r = relay.sseFoldChat(stream);
+  ok(!r.error, 'relay: ход с вызовом инструмента — не ошибка (было «пустой ответ»/502)');
+  ok(r.finish_reason === 'tool_calls', 'relay: finish_reason=tool_calls доезжает до клиента');
+  ok(r.tool_calls && r.tool_calls.length === 1 && r.tool_calls[0].id === 'call_1'
+    && r.tool_calls[0].function.name === 'read'
+    && r.tool_calls[0].function.arguments === '{"filePath": "/workspace"}',
+    'relay: id + имя + аргументы tool_calls складываются из дельт');
+  ok(r.usage && r.usage.total_tokens === 6050, 'relay: настоящий usage из потока не выбрасывается (была выдуманная оценка)');
+  const cj = relay.completionJson('m', r);
+  ok(Array.isArray(cj.choices[0].message.tool_calls) && cj.choices[0].message.content === 'Сейчас посмотрю папку',
+    'relay: вызовы инструментов возвращаются клиенту, а не исчезают');
+  ok(cj.usage.total_tokens === 6050 && cj.usage.estimated === undefined, 'relay: usage в ответе — реальный, без флага «оценка»');
+  const onlyCalls = relay.sseFoldChat(sse(
+    'data: {"choices":[{"delta":{"content":null,"tool_calls":[{"index":0,"id":"c","type":"function","function":{"name":"bash","arguments":"{\\"command\\":\\"ls\\"}"}}]},"finish_reason":"tool_calls"}]}'
+  ));
+  ok(!onlyCalls.error && onlyCalls.tool_calls.length === 1, 'relay: ответ вообще без текста, но с вызовом — валиден');
+  ok(relay.completionJson('m', onlyCalls).choices[0].message.content === null,
+    'relay: content=null, когда текста нет (как ждёт OpenAI-совместимый клиент)');
+}
+
+/* [35] нижняя панель: подписи не рвутся посреди слова */
+{
+  const css = fs.readFileSync(new URL('../css/ui.css', import.meta.url), 'utf8');
+  const bar = css.slice(css.indexOf('#tabsbar{'), css.indexOf('/* grids & lists */'));
+  ok(/white-space:nowrap/.test(bar), 'ui.css: подпись вкладки не переносится («Сценари/й»)');
+  ok(/flex:1 0 auto/.test(bar) && /min-width:52px/.test(bar), 'ui.css: кнопка вкладки не сжимается в обрезку текста');
+  ok(/overflow-x:auto/.test(bar), 'ui.css: при 7 вкладках полоса прокручивается, а не ломает слова');
+  ok(/\.t2\{[^}]*white-space:nowrap[^}]*text-overflow:ellipsis/.test(css), 'ui.css: подзаголовок в шапке не переносится на две строки');
+}
+
+/* [36] незакрытые края фикса «nullnullnull…»: Responses-путь релея всё ещё
+ * ронял вызовы инструментов, json-режим Gemini/Claude разбирал уже «вычищенный»
+ * текст (чистка портит данные), а срез истории в чате мог начинаться с хода ИИ. */
+{
+  const relay = await import('../relay/zen-relay.mjs');
+  const sse = (...l) => l.join('\n') + '\n';
+
+  const resp = relay.sseFoldResponses(sse(
+    'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_a","name":"read","arguments":""}}',
+    'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\\"filePath\\": "}',
+    'data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"\\"/workspace\\"}"}',
+    'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_a","name":"read","arguments":"{\\"filePath\\": \\"/workspace\\"}"}}',
+    'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":10,"output_tokens":4}}}'
+  ));
+  ok(!resp.error, 'relay responses: ход с вызовом инструмента — не 502 «пустой ответ»');
+  ok(resp.tool_calls && resp.tool_calls.length === 1 && resp.tool_calls[0].id === 'call_a'
+    && resp.tool_calls[0].function.name === 'read'
+    && resp.tool_calls[0].function.arguments === '{"filePath": "/workspace"}',
+    'relay responses: вызов инструмента собирается из added/delta/done');
+  ok(relay.completionJson('m', resp).choices[0].message.tool_calls.length === 1,
+    'relay responses: completionJson отдаёт tool_calls клиенту');
+  ok(!!relay.sseFoldResponses(sse('data: {"type":"response.completed","response":{"status":"completed"}}')).error,
+    'relay responses: поток без текста и без вызовов — ошибка, а не тишина');
+
+  const dupName = relay.sseFoldChat(sse(
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"bash","arguments":""}}]}}]}',
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"bash","arguments":"{\\"c\\":1}"}}]},"finish_reason":"tool_calls"}]}'
+  ));
+  ok(dupName.tool_calls[0].function.name === 'bash',
+    'relay: повтор имени в дельте не склеивается в «bashbash»');
+
+  const A = await import('../js/ai.js');
+  const gem = (parts) => async () => ({ ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts }, finishReason: 'STOP' }] }) });
+  const gset = { ai: 'gemini', aimodel: 'gemini-2.5-flash', key: 'K', aiGap: 0 };
+
+  const dashes = '-'.repeat(45);
+  globalThis.fetch = gem([{ text: '{"text":"раз  два","dash":"' + dashes + '"}' }]);
+  let parsed = await A.chat(gset, [{ role: 'user', content: 'x' }], { json: true, minGap: 0 });
+  ok(parsed && parsed.text === 'раз  два',
+    'ai.js: json-режим Gemini не склеивает пробелы внутри данных (чистка только для текста)');
+  ok(parsed && parsed.dash === dashes,
+    'ai.js: json-режим Gemini не режет длинные серии одинаковых символов в данных');
+
+  globalThis.fetch = gem([]);
+  let e = null;
+  try { await A.chat(gset, [{ role: 'user', content: 'x' }], { json: true, minGap: 0 }); } catch (err) { e = err; }
+  ok(!!e && /пустой/.test(e.message) && e.noRetry === true,
+    'ai.js: пустой ответ Gemini — внятная ошибка, а не тихая потеря пачки реплик');
+
+  globalThis.fetch = gem([]);
+  e = null;
+  try { await A.chatGeminiVision(gset, 'data:image/png;base64,AA', 'прочитай'); } catch (err) { e = err; }
+  ok(!!e && e.noRetry === true, 'ai.js vision: ответ без частей — ошибка (OCR не должен молча дать 0 строк)');
+  globalThis.fetch = gem([{ text: '   ' }]);
+  ok(await A.chatGeminiVision(gset, 'data:image/png;base64,AA', 'прочитай') === '',
+    'ai.js vision: пустая страница — пустой текст, без ошибки');
+
+  ok(A.textOf({ type: 'text', text: 'привет' }) === 'привет',
+    'ai.js: одиночная часть-объект даёт текст, а не «[object Object]»');
+
+  const msgs = [{ role: 'user', content: 'привет' }];
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'ок' } }] }) });
+  await A.chat({ ai: 'openai', aimodel: 'gpt-4o-mini', key: 'K', aiGap: 0 }, msgs, { images: ['data:image/png;base64,AA'], minGap: 0 });
+  ok(msgs[0].content === 'привет', 'ai.js: подстановка картинки не мутирует сообщения вызывающего');
+
+  const C = await import('../js/chat.js');
+  let turns = C.mergeTurns([{ role: 'ai', content: 'старое' }, { role: 'user', content: 'вопрос' }, { role: 'ai', content: 'ответ' }]);
+  ok(turns.length === 2 && turns[0].role === 'user' && turns[0].content === 'вопрос',
+    'chat.js: история, начавшаяся с хода ИИ, обрезается до первого вопроса (иначе 400 от Claude/Gemini)');
+  turns = C.mergeTurns([{ role: 'user', content: 'a' }, { role: 'user', content: 'b' }, { role: 'ai', content: 'c' }, { role: 'ai', content: 'd' }]);
+  ok(turns.length === 2 && turns[0].content === 'a\n\nb' && turns[1].content === 'c\n\nd',
+    'chat.js: одинаковые соседние ходы склеиваются, а не дают «must alternate»');
+  const srcTurns = [{ role: 'user', content: 'x' }];
+  C.mergeTurns(srcTurns);
+  ok(srcTurns[0].content === 'x', 'chat.js: mergeTurns не мутирует исходный список');
+  ok(C.mergeTurns([]).length === 0, 'chat.js: пустая история безопасна');
+}
+
 /* [32, 13, 14] дедуп type-логики, лимит страниц, uuid */
 {
   const U = await import('../js/util.js');

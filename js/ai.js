@@ -437,11 +437,14 @@ function messagesWithImages(messages, images) {
   if (!images || !images.length) return messages;
   const img = images[0];
   const body = { type: 'image_url', image_url: { url: img && (img.dataURL || img) } };
+  // Сообщения вызывающих не мутируем: раньше их content навечно превращался
+  // в parts, и следующий запрос уносил в модель уже не то, что показано в UI.
   return messages.map(m => {
     if (m.role !== 'user') return m;
-    if (typeof m.content === 'string') m.content = [{ type: 'text', text: m.content }];
-    if (Array.isArray(m.content)) m.content = [...m.content, body];
-    return m;
+    const text = typeof m.content === 'string' ? m.content : textOf(m.content);
+    const content = Array.isArray(m.content) ? [...m.content, body] : [body];
+    if (text.trim()) content.unshift({ type: 'text', text });
+    return { ...m, content };
   });
 }
 
@@ -450,7 +453,7 @@ export async function chatWithImage(settings, messages, imageDataURL) {
   settings = { ...settings, aimodel: settings.aimodel || provider(settings.ai).models[0]?.id || 'openai' };
   const p = provider(settings.ai);
   if (!p.vision) throw new Error('«' + (p.name || settings.ai) + '» не умеет смотреть изображения (выберите vision-провайдер)');
-  const text = messages.filter(m => m.role !== 'system').map(m => (m.role === 'user' ? 'Пользователь: ' : 'ИИ: ') + m.content).join('\n');
+  const text = messages.filter(m => m.role !== 'system').map(m => (m.role === 'user' ? 'Пользователь: ' : 'ИИ: ') + textOf(m.content)).join('\n');
   if (p.gemini) return chatGeminiVision(settings, imageDataURL, text);
   if (p.anthropic) return chatAnthropicVision(settings, imageDataURL, text);
   return openAICompat({
@@ -488,16 +491,24 @@ async function openAICompat({ name, endpoint, headers = {}, key = '', model, mes
         throw err;
       }
       const j = await r.json();
-      let out = (j.choices && j.choices[0] && (j.choices[0].message || {}).content) || '';
+      const msg = (j.choices && j.choices[0] && j.choices[0].message) || {};
+      // keyless-модели zen — агенты: на «создай файл» они отвечают вызовом
+      // инструмента, а не текстом. Раньше content молча становился пустым (или
+      // null → «null» в пузыре), и диалог уезжал в «nullnullnull…».
+      if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
+        throw toolCallsError(name + ' ' + model, msg.tool_calls);
+      }
+      const raw = msg.content;
       if (wantJsonMode) {
-        const parsed = parseJsonLoose(typeof out === 'string' ? out : JSON.stringify(out));
+        const parsed = parseJsonLoose(typeof raw === 'string' ? raw : JSON.stringify(raw));
         if (parsed) return parsed;
       }
-      return out;
+      return answerText(raw, name + ' ' + model);
     } catch (e) {
       if (e.name === 'AbortError') throw e;
       // 4xx (кроме 429, который обработан выше) — запрос неверный, повтор не поможет
       if (e.status >= 400 && e.status < 500) throw e;
+      if (e.noRetry) throw e;   // ответ разобран, но годный текст из него не получить
       if (attempt >= 3) throw e;
       await sleep(gap * (attempt + 1));
       attempt++;
@@ -518,12 +529,75 @@ function temperatureFor(model, json) {
 export { temperatureFor, REASONING_MODELS };
 
 /* Текст из parts OpenAI-совместимого формата (после подстановки картинок). */
-function textOf(content) {
+export function textOf(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content.map(p => (p && typeof p.text === 'string' ? p.text : (p && p.type === 'image_url' ? '' : ''))).filter(Boolean).join(' ');
   }
+  // одиночная часть, а не массив: раньше превращалась в «[object Object]»
+  if (content && typeof content === 'object' && typeof content.text === 'string') return content.text;
   return content == null ? '' : String(content);
+}
+
+/* Имена инструментов из ответа провайдера (OpenAI / Gemini / Anthropic). */
+export function toolNames(calls) {
+  const out = [];
+  for (const c of Array.isArray(calls) ? calls : []) {
+    const n = (c && c.function && c.function.name) || (c && c.name) ||
+      (c && c.functionCall && c.functionCall.name) || (c && c.type === 'tool_use' && c.name);
+    if (n) out.push(String(n));
+  }
+  return [...new Set(out)];
+}
+
+/* Модель вместо ответа вызвала инструмент. У VoiceComic в чате инструментов
+ * нет, и раньше такой ответ молча превращался в пустой content: модель обещала
+ * «сейчас посмотрю папку», ничего не происходило, а следующим ходом она
+ * сыпала «nullnullnull…». Теперь это внятная ошибка с именами инструментов. */
+export function toolCallsError(label, calls) {
+  const names = toolNames(calls);
+  const e = new Error(
+    `«${label}» вместо ответа вызвал${names.length === 1 ? 'а' : 'и'} инструмент` +
+    `${names.length ? 'ы: ' + names.join(', ') : ''}. В чате VoiceComic инструментов нет — задайте вопрос текстом ` +
+    '(например: «придумай 3 реплики для панели») или выберите другую модель.'
+  );
+  e.toolCalls = names;
+  e.noRetry = true;   // повтор не поможет: модель снова позовёт инструмент
+  return e;
+}
+
+/* Мусорный ответ: «nullnullnull…», «ааааааа» и прочие зацикленные повторы.
+ * Модели на длинных промптах (особенно бесплатные keyless) срываются именно
+ * так, и пользователь получал простыню мусора вместо ответа. */
+export function sanitizeModelText(t) {
+  if (typeof t !== 'string') return '';
+  return t
+    .replace(/(?:[ \t]*(?:null|undefined|NaN)){4,}[ \t]*/gi, ' ')
+    .replace(/(.)\1{40,}/gs, '$1…')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+/** Привести ответ провайдера к тексту или объяснить, почему текста нет. */
+export function answerText(raw, label) {
+  if (Array.isArray(raw) && raw.some(p => p && (p.functionCall || p.tool_use || p.type === 'function_call'))) {
+    throw toolCallsError(label, raw);
+  }
+  if (toolNames(raw).length) throw toolCallsError(label, raw);
+  const text = sanitizeModelText(textOf(raw));
+  if (!text) {
+    const e = new Error(`«${label}» вернул${raw == null ? ' null' : ' пустой'} ответ — повторите вопрос или смените модель`);
+    e.noRetry = true;
+    throw e;
+  }
+  return text;
+}
+
+/* Vision-провайдер не отдал ни одной части: это сбой, а не пустая страница. */
+function emptyVision(label) {
+  const e = new Error(`«${label}» не вернул текст страницы (пустой ответ API) — повторите OCR или смените модель`);
+  e.noRetry = true;
+  return e;
 }
 
 async function chatGemini(settings, messages, opts = {}) {
@@ -554,16 +628,24 @@ async function chatGemini(settings, messages, opts = {}) {
       if (r.status === 429 && waits < 3) { waits++; await sleep(5000 * waits); continue; }
       if (!r.ok) { const t = await r.text().catch(() => ''); const e = new Error('Gemini ' + r.status + (t ? ': ' + t.slice(0, 150) : '')); e.status = r.status; throw e; }
       const j = await r.json();
-      const out = j.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
-      if (!out && j.candidates?.[0]?.finishReason && j.candidates[0].finishReason !== 'STOP') {
+      const blocks = j.candidates?.[0]?.content?.parts || [];
+      // functionCall-части — это вызов инструмента, а не ответ
+      const calls = blocks.filter(p => p && p.functionCall);
+      if (calls.length) throw toolCallsError('Gemini ' + model, calls);
+      const raw = blocks.map(p => (p && typeof p.text === 'string' ? p.text : '')).join('');
+      if (!raw && j.candidates?.[0]?.finishReason && j.candidates[0].finishReason !== 'STOP') {
         const e = new Error('Gemini ' + j.candidates[0].finishReason + (j.promptFeedback?.blockReason ? ' (' + j.promptFeedback.blockReason + ')' : ''));
         e.status = 400; throw e;
       }
-      if (opts.json) { const parsed = parseJsonLoose(out); if (parsed) return parsed; }
-      return out;
+      // JSON разбирается из СЫРОГО текста: sanitizeModelText склеивает пробелы
+      // и режет длинные серии одинаковых символов, а в данных модели (null-ы,
+      // base64, разделители) это портит значение. Текстовый ответ — уже чистый.
+      if (opts.json) { const parsed = parseJsonLoose(raw); if (parsed) return parsed; }
+      return answerText(raw, 'Gemini ' + model);
     } catch (e) {
       if (e.name === 'AbortError') throw e;
       if (e.status >= 400 && e.status < 500) throw e;
+      if (e.noRetry) throw e;
       if (attempt >= 3) throw e;
       attempt++;
       await sleep(gap * attempt);
@@ -606,12 +688,18 @@ async function chatAnthropic(settings, messages, opts = {}) {
       if (r.status === 429 && waits < 3) { waits++; await sleep(5000 * waits); continue; }
       if (!r.ok) { const t = await r.text().catch(() => ''); const e = new Error('Claude ' + r.status + (t ? ': ' + t.slice(0, 150) : '')); e.status = r.status; throw e; }
       const j = await r.json();
-      let out = (j.content || []).map(x => x.text).join('') || '';
-      if (opts.json) { const parsed = parseJsonLoose(out); if (parsed) return parsed; }
-      return out;
+      const blocks = Array.isArray(j.content) ? j.content : [];
+      const calls = blocks.filter(x => x && x.type === 'tool_use');
+      if (calls.length) throw toolCallsError('Claude ' + model, calls);
+      const raw = blocks.map(x => (x && typeof x.text === 'string' ? x.text : '')).join('');
+      // JSON разбирается из сырого текста (см. chatGemini): чистка текста
+      // портит значения внутри данных.
+      if (opts.json) { const parsed = parseJsonLoose(raw); if (parsed) return parsed; }
+      return answerText(raw, 'Claude ' + model);
     } catch (e) {
       if (e.name === 'AbortError') throw e;
       if (e.status >= 400 && e.status < 500) throw e;
+      if (e.noRetry) throw e;
       if (attempt >= 3) throw e;
       attempt++;
       await sleep(gap * attempt);
@@ -629,7 +717,13 @@ export async function chatGeminiVision(settings, imageDataURL, prompt) {
   const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!r.ok) throw new Error(`Gemini vision ${r.status}`);
   const j = await r.json();
-  return j.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+  const parts = j.candidates?.[0]?.content?.parts;
+  // Пустой массив частей — это не «пустая страница», а сбой: раньше OCR тихо
+  // отдавал 0 строк, и пользователь видел пустой ход без объяснения.
+  if (!Array.isArray(parts) || !parts.length) throw emptyVision('Gemini ' + model);
+  const calls = parts.filter(p => p && p.functionCall);
+  if (calls.length) throw toolCallsError('Gemini ' + model + ' vision', calls);
+  return sanitizeModelText(parts.map(p => (p && typeof p.text === 'string' ? p.text : '')).join(''));
 }
 
 /* ================================================================
@@ -682,7 +776,11 @@ async function chatAnthropicVision(settings, dataURL, prompt) {
   });
   if (!r.ok) throw new Error(`Claude vision ${r.status}`);
   const j = await r.json();
-  return (j.content || []).map(x => x.text).join('') || '';
+  const blocks = Array.isArray(j.content) ? j.content : [];
+  if (!blocks.length) throw emptyVision('Claude ' + (settings.aimodel || 'claude-sonnet-4-5'));
+  const calls = blocks.filter(x => x && x.type === 'tool_use');
+  if (calls.length) throw toolCallsError('Claude vision', calls);
+  return sanitizeModelText(blocks.map(x => (x && typeof x.text === 'string' ? x.text : '')).join(''));
 }
 
 /* Раздать роли: вход — реплики [{idx, page, text}]

@@ -16,7 +16,9 @@
  *   - jev-*               — это «система решений» структуры state+questions,
  *     не чат; релей возвращает понятную ошибку.
  * Оба пути сворачиваются в обычный JSON chat.completion, так что клиент
- * (non-stream) ничего не знает про SSE.
+ * (non-stream) ничего не знает про SSE. Вызовы инструментов (zen их требует
+ * для keyless-режима) не выбрасываются, а возвращаются как tool_calls: иначе
+ * модель обещает действие, которого не будет, и следующий ход рассыпается.
  *
  * Запуск:        node relay/zen-relay.mjs [порт]
  *                 (порт по умолчанию 8789; можно ZEN_RELAY_PORT=…)
@@ -99,10 +101,34 @@ function responsesTools() {
   }));
 }
 
+/* Сложить потоковые дельты tool_calls (id приходит один раз, arguments —
+ * кусками в том же chunk). На порядок не полагаемся: сортируем по index.
+ * Имя некоторые провайдеры присылают целиком в каждой дельте, поэтому
+ * одинаковое повторе не склеивается, а разные куски — склеиваются. */
+function foldToolCalls(acc, deltas) {
+  for (const d of deltas) {
+    if (!d) continue;
+    const i = Number.isInteger(d.index) ? d.index : acc.size;
+    let c = acc.get(i);
+    if (!c) { c = { id: '', type: 'function', function: { name: '', arguments: '' } }; acc.set(i, c); }
+    if (d.id) c.id = d.id;
+    if (d.type) c.type = d.type;
+    const f = d.function || {};
+    if (f.name) {
+      c.function.name = !c.function.name ? f.name
+        : c.function.name === f.name ? f.name
+        : c.function.name + f.name;
+    }
+    if (typeof f.arguments === 'string') c.function.arguments += f.arguments;
+  }
+}
+
 export function sseFoldChat(raw) {
   let content = '';
   let finish_reason = 'stop';
   let err = null;
+  let usage = null;
+  const calls = new Map();
   for (const line of raw.split(/\r?\n/)) {
     const s = line.trim();
     if (!s.startsWith('data:')) continue;
@@ -112,21 +138,28 @@ export function sseFoldChat(raw) {
       const o = JSON.parse(payload);
       // stream=true у zen всегда присылает сначала error-событие
       if (o.error) { err = o.error; continue; }
+      // реальная телеметрия приходит последним chunk'ом — раньше она
+      // выбрасывалась, и клиенту уходила выдуманная оценка по символам
+      if (o.usage) usage = o.usage;
       const d = o.choices && o.choices[0];
       if (!d) continue;
-      if (d.delta && d.delta.content) content += d.delta.content;
+      if (d.delta && typeof d.delta.content === 'string') content += d.delta.content;
+      if (d.delta && Array.isArray(d.delta.tool_calls)) foldToolCalls(calls, d.delta.tool_calls);
       if (d.finish_reason) finish_reason = d.finish_reason;
-      if (d.delta && d.delta.reasoning_content) content += '';
     } catch (_) { /* skip partial */ }
   }
-  if (err) return { content, finish_reason: 'error', error: errText(err) };
+  const tool_calls = [...calls.keys()].sort((a, b) => a - b).map((k) => calls.get(k));
+  const out = { content, finish_reason, usage, tool_calls };
+  if (err) return { ...out, finish_reason: 'error', error: errText(err) };
   if (finish_reason === 'length') {
-    return { content, finish_reason, error: 'модель упёрлась в лимит длины ответа (сократите запрос)' };
+    return { ...out, error: 'модель упёрлась в лимит длины ответа (сократите запрос)' };
   }
-  if (!content.trim()) {
-    return { content, finish_reason, error: 'модель вернула пустой ответ' };
+  // Ответ-вызов инструментов — тоже ответ: раньше он попадал в «пустой
+  // ответ» (502), потому что текста в нём может не быть вовсе.
+  if (!content.trim() && !tool_calls.length) {
+    return { ...out, error: 'модель вернула пустой ответ' };
   }
-  return { content, finish_reason };
+  return out;
 }
 
 function errText(e) {
@@ -141,6 +174,23 @@ export function sseFoldResponses(raw) {
   let stopped = false;
   let err = null;
   let incomplete = null;
+  let usage = null;
+  // Responses-API отдаёт вызов инструмента отдельными событиями (added →
+  // function_call_arguments.delta* → done), а не дельтами в choices. Раньше
+  // они молча терялись, и ход без текста уходил в 502 «пустой ответ».
+  const calls = new Map();
+  const callEntry = (key, item) => {
+    const k = String(key);
+    let c = calls.get(k);
+    if (!c) { c = { id: '', type: 'function', function: { name: '', arguments: '' } }; calls.set(k, c); }
+    if (item) {
+      if (item.call_id) c.id = item.call_id;
+      else if (item.id) c.id = item.id;
+      if (item.name && !c.function.name) c.function.name = item.name;
+      if (typeof item.arguments === 'string' && item.arguments) c.function.arguments = item.arguments;
+    }
+    return c;
+  };
   for (const line of raw.split(/\r?\n/)) {
     const s = line.trim();
     if (!s.startsWith('data:')) continue;
@@ -149,27 +199,47 @@ export function sseFoldResponses(raw) {
     try {
       const o = JSON.parse(payload);
       if (o.type === 'response.output_text.delta') content += o.delta || '';
-      if (o.type === 'response.completed') { status = (o.response && o.response.status) || 'completed'; stopped = true; }
+      if (o.type === 'response.output_item.added' && o.item && o.item.type === 'function_call') {
+        callEntry(o.item.id != null ? o.item.id : o.output_index, o.item);
+      }
+      if (o.type === 'response.function_call_arguments.delta') {
+        callEntry(o.item_id != null ? o.item_id : o.output_index, null).function.arguments +=
+          typeof o.delta === 'string' ? o.delta : '';
+      }
+      if (o.type === 'response.output_item.done' && o.item && o.item.type === 'function_call') {
+        callEntry(o.item.id != null ? o.item.id : o.output_index, o.item);
+      }
+      if (o.type === 'response.completed') { status = (o.response && o.response.status) || 'completed'; stopped = true; if (o.response && o.response.usage) usage = o.response.usage; }
       if (o.type === 'response.incomplete') { incomplete = o.response && o.response.incomplete_details; stopped = true; }
       if (o.type === 'response.failed' || o.type === 'error') { err = o; status = 'failed'; stopped = true; }
       if (o.type === 'response.error') { err = o; status = 'failed'; stopped = true; }
     } catch (_) { /* skip partial */ }
   }
-  if (err) return { content, status, stopped, finish_reason: 'error', error: errText(err.error || err.response || err) };
+  const tool_calls = [...calls.values()];
+  const out = { content, status, stopped, tool_calls };
+  if (err) return { ...out, finish_reason: 'error', error: errText(err.error || err.response || err) };
   if (incomplete) {
-    return { content, status, stopped, finish_reason: 'error',
+    return { ...out, finish_reason: 'error',
       error: 'модель не закончила ответ: ' + (incomplete.reason || 'incomplete') };
   }
   if (status !== 'completed') {
-    return { content, status, stopped, finish_reason: 'error', error: 'статус ответа zen: ' + status };
+    return { ...out, finish_reason: 'error', error: 'статус ответа zen: ' + status };
   }
-  if (!content.trim()) {
-    return { content, status, stopped, finish_reason: 'error', error: 'модель вернула пустой ответ' };
+  if (!content.trim() && !tool_calls.length) {
+    return { ...out, finish_reason: 'error', error: 'модель вернула пустой ответ' };
   }
-  return { content, status, stopped, finish_reason: 'stop' };
+  return { ...out, finish_reason: 'stop', usage };
 }
 
 export function completionJson(model, result) {
+  const msg = { role: 'assistant', content: result.content || '' };
+  // Вызовы инструментов возвращаем как есть: раньше они молча терялись, и
+  // клиент получал текст без обещанного действия (а следующий ход модели
+  // рассыпался на «nullnullnull…»).
+  if (Array.isArray(result.tool_calls) && result.tool_calls.length) {
+    msg.tool_calls = result.tool_calls;
+    if (!msg.content) msg.content = null;
+  }
   return {
     id: 'chatcmpl-relay-' + Date.now(),
     object: 'chat.completion',
@@ -177,7 +247,7 @@ export function completionJson(model, result) {
     model,
     choices: [{
       index: 0,
-      message: { role: 'assistant', content: result.content || '' },
+      message: msg,
       finish_reason: result.finish_reason || 'stop',
     }],
     usage: usageOf(result),
@@ -185,7 +255,9 @@ export function completionJson(model, result) {
 }
 
 /* Считаем по-настоящему. Раньше здесь всегда стояли нули — это фиктивные
- * данные, которые выглядят как настоящая телеметрия. */
+ * данные, которые выглядят как настоящая телеметрия. Теперь сюда попадает
+ * настоящий usage из последнего chunk'а потока, а оценка по символам —
+ * только если апстрим токенов не отдал. */
 function usageOf(result) {
   const u = (result && result.usage) || {};
   const prompt = Number(u.prompt_tokens ?? u.input_tokens ?? 0) || 0;

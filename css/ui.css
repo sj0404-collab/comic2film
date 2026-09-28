@@ -18,10 +18,10 @@ body{
 #topbar{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:10px;
   padding:10px 14px;padding-top:calc(10px + env(safe-area-inset-top));
   background:rgba(15,20,32,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
-.brand{display:flex;gap:10px;align-items:center}
+.brand{display:flex;gap:10px;align-items:center;min-width:0}
 .brand .logo{font-size:24px}
-.t1{font-weight:800;letter-spacing:.3px}
-.t2{font-size:11px;color:var(--mut)}
+.t1{font-weight:800;letter-spacing:.3px;white-space:nowrap}
+.t2{font-size:11px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46vw}
 .spacer{flex:1}
 button,label.btn{color:var(--txt);background:var(--panel);border:1px solid var(--line);
   border-radius:10px;padding:8px 12px;font-size:14px;cursor:pointer;touch-action:manipulation;
@@ -60,13 +60,21 @@ main{flex:1;padding:14px;padding-bottom:24px}
 .dz-text{color:var(--mut);margin:8px 0 12px}
 
 /* bottom tabs */
+/* Подписи не должны рваться посреди слова («Сценари/й» на узком экране):
+   nowrap + flex:1 0 auto оставляет кнопке её естественную ширину, а если
+   совсем тесно (7 вкладок на 320px) — полоса прокручивается, а не ломает
+   слова и не наезжает на соседние кнопки. */
 #tabsbar{position:fixed;bottom:0;left:0;right:0;z-index:30;display:flex;
+  overflow-x:auto;overflow-y:hidden;scrollbar-width:none;
   background:rgba(15,20,32,.96);backdrop-filter:blur(10px);border-top:1px solid var(--line)}
-#tabsbar button{flex:1;border:none;background:transparent;border-radius:0;padding:8px 2px 10px;
-  font-size:11px;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--mut);touch-action:manipulation}
+#tabsbar::-webkit-scrollbar{display:none}
+#tabsbar button{flex:1 0 auto;min-width:52px;border:none;background:transparent;border-radius:0;
+  padding:8px 2px 10px;white-space:nowrap;
+  font-size:10px;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--mut);touch-action:manipulation}
 #tabsbar button .ic{font-size:19px}
 #tabsbar button.active{color:var(--acc);font-weight:700}
 @media(min-width:761px){#tabsbar{max-width:760px;left:50%;transform:translateX(-50%);border-radius:14px 14px 0 0}}
+@media(min-width:380px){#tabsbar button{font-size:11px}}
 
 /* grids & lists */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px}
