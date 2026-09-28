@@ -67,20 +67,193 @@ class AgentClient(private val http: OkHttpClient) {
         }
 
         fun isBusy(): Boolean = activeCall.get() != null
+
+        /**
+         * Собирает `input` для /responses.
+         *
+         * Инструменты тут — не текст. Вызов уходит отдельным item'ом
+         * function_call, результат — function_call_output с тем же call_id.
+         * Раньше оба случая склеивались в user-текст («Результат инструмента
+         * call_x: …»), а tool_calls ассистентского хода просто выбрасывались:
+         * для Responses-моделей связь вызов↔результат рвалась, и агент после
+         * успешного вызова повторял его же.
+         *
+         * Картинки крепятся к последнему ходу пользователя — так же, как в
+         * chatGemini и chatAnthropic.
+         */
+        internal fun responsesInput(messages: List<Msg>, images: List<String> = emptyList()): JsonArray {
+            val lastUser = messages.indexOfLast { it.role == "user" }
+            return buildJsonArray {
+                messages.forEachIndexed { i, m ->
+                    when {
+                        m.role == "tool" -> add(buildJsonObject {
+                            put("type", "function_call_output")
+                            put("call_id", m.toolCallId)
+                            put("output", m.content)
+                        })
+
+                        m.role == "assistant" && m.toolCallsJson != null -> {
+                            if (m.content.isNotBlank()) add(buildJsonObject {
+                                put("type", "message")
+                                put("role", "assistant")
+                                putJsonArray("content") {
+                                    add(buildJsonObject {
+                                        put("type", "output_text")
+                                        put("text", m.content)
+                                    })
+                                }
+                            })
+                            m.toolCallsJson.forEach { tc -> add(functionCallItem(tc)) }
+                        }
+
+                        else -> add(buildJsonObject {
+                            put("type", "message")
+                            put("role", if (m.role == "assistant") "assistant" else "user")
+                            putJsonArray("content") {
+                                add(buildJsonObject {
+                                    put("type", "input_text")
+                                    put("text", m.content)
+                                })
+                                if (i == lastUser) images.forEach { url ->
+                                    add(buildJsonObject {
+                                        put("type", "input_image")
+                                        put("image_url", url)
+                                    })
+                                }
+                            }
+                        })
+                    }
+                }
+            }
+        }
+
+        /** Responses ждёт плоский item; агент же складит вызовы в openai-обёртке. */
+        private fun functionCallItem(tc: JsonObject): JsonObject {
+            val f = tc["function"] as? JsonObject
+            return buildJsonObject {
+                put("type", "function_call")
+                put("call_id", tc["id"]?.jsonPrimitive?.content ?: "")
+                put("name", f?.get("name")?.jsonPrimitive?.content ?: tc["name"]?.jsonPrimitive?.content ?: "")
+                put("arguments", f?.get("arguments")?.jsonPrimitive?.content ?: tc["arguments"]?.jsonPrimitive?.content ?: "{}")
+            }
+        }
+
+        /**
+         * contents для Gemini. Картинки — к последнему ходу пользователя:
+         * на весь хвост истории они не дублируются, иначе четыре сообщения
+         * пользователя означали бы четыре копии картинки в оплате.
+         */
+        internal fun geminiContents(messages: List<Msg>, images: List<String> = emptyList()): JsonArray {
+            val lastUser = messages.indexOfLast { it.role == "user" }
+            return buildJsonArray {
+                messages.forEachIndexed { i, m ->
+                    add(buildJsonObject {
+                        put("role", if (m.role == "assistant") "model" else "user")
+                        putJsonArray("parts") {
+                            add(buildJsonObject {
+                                put("text", if (m.role == "tool") "Результат инструмента: ${m.content}" else m.content)
+                            })
+                            if (m.role == "tool") {
+                                add(buildJsonObject {
+                                    putJsonObject("functionResponse") {
+                                        put("name", "tool")
+                                        putJsonObject("response") { put("result", m.content) }
+                                    }
+                                })
+                            }
+                            if (i == lastUser) images.forEach { url ->
+                                add(buildJsonObject {
+                                    putJsonObject("inline_data") {
+                                        put("mime_type", AiClient.mimeOf(url))
+                                        put("data", url.substringAfter("base64,", ""))
+                                    }
+                                })
+                            }
+                        }
+                    })
+                }
+            }
+        }
+
+        /** messages для Anthropic: system уходит отдельным полем, картинки — в последний ход. */
+        internal fun anthropicMessages(messages: List<Msg>, images: List<String> = emptyList()): JsonArray {
+            val turns = messages.filter { it.role != "system" }
+            val lastTurn = turns.indexOfLast { it.role == "user" }
+            return buildJsonArray {
+                turns.forEachIndexed { i, m ->
+                    when {
+                        m.role == "tool" -> add(buildJsonObject {
+                            put("role", "user")
+                            putJsonArray("content") {
+                                add(buildJsonObject {
+                                    put("type", "tool_result")
+                                    put("tool_use_id", m.toolCallId)
+                                    put("content", m.content)
+                                })
+                            }
+                        })
+
+                        m.role == "assistant" && m.toolCallsJson != null -> add(buildJsonObject {
+                            put("role", "assistant")
+                            putJsonArray("content") {
+                                if (m.content.isNotBlank()) {
+                                    add(buildJsonObject { put("type", "text"); put("text", m.content) })
+                                }
+                                m.toolCallsJson.forEach { tc ->
+                                    val f = tc["function"] as? JsonObject
+                                    add(buildJsonObject {
+                                        put("type", "tool_use")
+                                        put("id", tc["id"]?.jsonPrimitive?.content ?: "")
+                                        put("name", f?.get("name")?.jsonPrimitive?.content ?: "")
+                                        putJsonObject("input") {
+                                            runCatching {
+                                                (f?.get("arguments")?.jsonPrimitive?.content ?: "{}").let {
+                                                    json.parseToJsonElement(it).jsonObject.forEach { (k, v) -> put(k, v) }
+                                                }
+                                            }
+                                        }
+                                    })
+                                }
+                            }
+                        })
+
+                        i == lastTurn && images.isNotEmpty() -> add(buildJsonObject {
+                            put("role", "user")
+                            putJsonArray("content") {
+                                add(buildJsonObject { put("type", "text"); put("text", m.content) })
+                                images.forEach { url ->
+                                    add(buildJsonObject {
+                                        put("type", "image")
+                                        putJsonObject("source") {
+                                            put("type", "base64")
+                                            put("media_type", AiClient.mimeOf(url))
+                                            put("data", url.substringAfter("base64,", ""))
+                                        }
+                                    })
+                                }
+                            }
+                        })
+
+                        else -> add(buildJsonObject { put("role", m.role); put("content", m.content) })
+                    }
+                }
+            }
+        }
     }
 
     suspend fun turn(
         settings: Settings,
         messages: List<Msg>,
         tools: List<JsonObject>,
-        toolChoice: String = "auto"
+        toolChoice: String = "auto",
+        images: List<String> = emptyList()
     ): AiTurn {
         val p = Providers.provider(settings.ai)
         return when {
-            settings.ai == "opencode" -> zen(settings, messages, tools, toolChoice)
-            p.gemini -> gemini(settings, messages, tools)
-            p.anthropic -> anthropic(settings, messages, tools)
-            else -> openAi(settings, messages, tools, toolChoice)
+            settings.ai == "opencode" -> zen(settings, messages, tools, toolChoice, images)
+            p.gemini -> gemini(settings, messages, tools, images)
+            p.anthropic -> anthropic(settings, messages, tools, images)
+            else -> openAi(settings, messages, tools, toolChoice, images)
         }
     }
 
@@ -90,15 +263,17 @@ class AgentClient(private val http: OkHttpClient) {
         settings: Settings,
         messages: List<Msg>,
         tools: List<JsonObject>,
-        toolChoice: String
+        toolChoice: String,
+        images: List<String>
     ): AiTurn = withContext(Dispatchers.IO) {
         val p = Providers.provider(settings.ai)
         val url = if (settings.ai == "custom") settings.aiurl.trim() else p.endpoint
         if (url.isBlank()) throw AiException("Свой провайдер: не задан адрес OpenAI-совместимого API")
+        val lastUser = messages.indexOfLast { it.role == "user" }
         val body = buildJsonObject {
             put("model", settings.aimodel)
             putJsonArray("messages") {
-                messages.forEach { m ->
+                messages.forEachIndexed { i, m ->
                     if (m.role == "tool") {
                         add(buildJsonObject {
                             put("role", "tool")
@@ -110,6 +285,19 @@ class AgentClient(private val http: OkHttpClient) {
                             put("role", "assistant")
                             put("content", m.content)
                             putJsonArray("tool_calls") { m.toolCallsJson.forEach { add(it) } }
+                        })
+                    } else if (m.role == "user" && images.isNotEmpty() && i == lastUser) {
+                        add(buildJsonObject {
+                            put("role", "user")
+                            putJsonArray("content") {
+                                add(buildJsonObject { put("type", "text"); put("text", m.content) })
+                                images.forEach { url ->
+                                    add(buildJsonObject {
+                                        put("type", "image_url")
+                                        putJsonObject("image_url") { put("url", url) }
+                                    })
+                                }
+                            }
                         })
                     } else {
                         add(buildJsonObject {
@@ -166,7 +354,8 @@ class AgentClient(private val http: OkHttpClient) {
         settings: Settings,
         messages: List<Msg>,
         tools: List<JsonObject>,
-        toolChoice: String
+        toolChoice: String,
+        images: List<String> = emptyList()
     ): AiTurn = withContext(Dispatchers.IO) {
         val useResponses = RESPONSES_MODELS.containsMatchIn(settings.aimodel)
         val payload = buildJsonObject {
@@ -178,33 +367,7 @@ class AgentClient(private val http: OkHttpClient) {
                     tools.forEach { add(toResponsesTool(it)) }
                 }
                 put("max_output_tokens", 4000)
-                put("input", buildJsonArray {
-                    messages.forEach { m ->
-                        if (m.role == "tool") {
-                            val toolText = "Результат инструмента " + m.toolCallId + ": " + m.content
-                            add(buildJsonObject {
-                                put("role", "user")
-                                put("content", buildJsonArray {
-                                    add(buildJsonObject {
-                                        put("type", "input_text")
-                                        put("text", toolText)
-                                    })
-                                })
-                            })
-                        } else {
-                            val body = m.content
-                            add(buildJsonObject {
-                                put("role", if (m.role == "assistant") "assistant" else "user")
-                                put("content", buildJsonArray {
-                                    add(buildJsonObject {
-                                        put("type", "input_text")
-                                        put("text", body)
-                                    })
-                                })
-                            })
-                        }
-                    }
-                })
+                put("input", responsesInput(messages, images))
             } else {
                 putJsonArray("tools") {
                     if (tools.isEmpty()) AiClient.builtinTools.forEach { add(it) } else tools.forEach { add(it) }
@@ -264,31 +427,16 @@ class AgentClient(private val http: OkHttpClient) {
 
     // ---------- Gemini / Anthropic ----------
 
-    private suspend fun gemini(settings: Settings, messages: List<Msg>, tools: List<JsonObject>): AiTurn =
+    private suspend fun gemini(
+        settings: Settings,
+        messages: List<Msg>,
+        tools: List<JsonObject>,
+        images: List<String> = emptyList()
+    ): AiTurn =
         withContext(Dispatchers.IO) {
             if (settings.key.isBlank()) throw AiException("Gemini: нужен API-ключ")
             val body = buildJsonObject {
-                putJsonArray("contents") {
-                    messages.forEach { m ->
-                        val role = if (m.role == "assistant") "model" else "user"
-                        add(buildJsonObject {
-                            put("role", role)
-                            putJsonArray("parts") {
-                                add(buildJsonObject {
-                                    put("text", if (m.role == "tool") "Результат инструмента: ${m.content}" else m.content)
-                                })
-                                if (m.role == "tool") {
-                                    add(buildJsonObject {
-                                        putJsonObject("functionResponse") {
-                                            put("name", "tool")
-                                            putJsonObject("response") { put("result", m.content) }
-                                        }
-                                    })
-                                }
-                            }
-                        })
-                    }
-                }
+                putJsonArray("contents") { addAll(geminiContents(messages, images)) }
                 if (tools.isNotEmpty()) {
                     putJsonArray("tools") {
                         add(buildJsonObject {
@@ -337,56 +485,19 @@ class AgentClient(private val http: OkHttpClient) {
             AiTurn(sb.toString(), "", calls, "stop")
         }
 
-    private suspend fun anthropic(settings: Settings, messages: List<Msg>, tools: List<JsonObject>): AiTurn =
+    private suspend fun anthropic(
+        settings: Settings,
+        messages: List<Msg>,
+        tools: List<JsonObject>,
+        images: List<String> = emptyList()
+    ): AiTurn =
         withContext(Dispatchers.IO) {
             if (settings.key.isBlank()) throw AiException("Anthropic: нужен API-ключ")
             val body = buildJsonObject {
                 put("model", settings.aimodel)
                 put("max_tokens", 4000)
                 messages.filter { it.role == "system" }.forEach { put("system", it.content) }
-                putJsonArray("messages") {
-                    messages.filter { it.role != "system" }.forEach { m ->
-                        if (m.role == "tool") {
-                            add(buildJsonObject {
-                                put("role", "user")
-                                putJsonArray("content") {
-                                    add(buildJsonObject {
-                                        put("type", "tool_result")
-                                        put("tool_use_id", m.toolCallId)
-                                        put("content", m.content)
-                                    })
-                                }
-                            })
-                        } else if (m.role == "assistant" && m.toolCallsJson != null) {
-                            add(buildJsonObject {
-                                put("role", "assistant")
-                                putJsonArray("content") {
-                                    if (m.content.isNotBlank()) {
-                                        add(buildJsonObject { put("type", "text"); put("text", m.content) })
-                                    }
-                                    m.toolCallsJson.forEach { tc ->
-                                        val f = tc["function"] as? JsonObject
-                                        add(buildJsonObject {
-                                            put("type", "tool_use")
-                                            put("id", tc["id"]?.jsonPrimitive?.content ?: "")
-                                            put("name", f?.get("name")?.jsonPrimitive?.content ?: "")
-                                            putJsonObject("input") {
-                                                runCatching {
-                                                    (f?.get("arguments")?.jsonPrimitive?.content
-                                                        ?: "{}").let {
-                                                        json.parseToJsonElement(it).jsonObject.forEach { (k, v) -> put(k, v) }
-                                                    }
-                                                }
-                                            }
-                                        })
-                                    }
-                                }
-                            })
-                        } else {
-                            add(buildJsonObject { put("role", m.role); put("content", m.content) })
-                        }
-                    }
-                }
+                putJsonArray("messages") { addAll(anthropicMessages(messages, images)) }
                 if (tools.isNotEmpty()) putJsonArray("tools") { tools.forEach { add(it) } }
             }
             val call = http.newCall(

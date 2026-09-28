@@ -65,6 +65,10 @@ class AiClient(private val http: OkHttpClient) {
         }
 
         /** Ленивый JSON-парсинг: сначала напрямую, потом первый объект/массив в тексте. */
+        /** Тип картинки из data-URL; в AgentClient нужен как статический. */
+        internal fun mimeOf(dataUrl: String): String =
+            dataUrl.substringBefore(";base64,").substringAfterLast(':').ifEmpty { "image/jpeg" }
+
         fun parseJsonLoose(raw: String): JsonElement? {
             val s = raw.trim()
             runCatching { return json.parseToJsonElement(s) }
@@ -120,7 +124,11 @@ class AiClient(private val http: OkHttpClient) {
         else -> p.endpoint
     }
 
-    private fun buildOpenAiBody(
+    /**
+     * internal — ради тестов: именно тут решается, к какому ходу приклеить
+     * картинки, и ошибка здесь означает «модель получила картинку четыре раза».
+     */
+    internal fun buildOpenAiBody(
         settings: Settings,
         messages: List<Msg>,
         wantJson: Boolean,
@@ -128,6 +136,9 @@ class AiClient(private val http: OkHttpClient) {
         useJsonMode: Boolean
     ): JsonObject = buildJsonObject {
         put("model", settings.aimodel)
+        // картинка — часть конкретного хода, а не каждого: иначе в истории
+        // на четыре сообщения пользователя приходит четыре копии картинки
+        val lastUser = messages.indexOfLast { it.role == "user" }
         if (images.isEmpty()) {
             putJsonArray("messages") {
                 messages.forEach { msg ->
@@ -139,7 +150,7 @@ class AiClient(private val http: OkHttpClient) {
             }
         } else {
             putJsonArray("messages") {
-                messages.forEach { msg ->
+                messages.forEachIndexed { i, msg ->
                     if (msg.role == "user") {
                         add(buildJsonObject {
                             put("role", "user")
@@ -148,7 +159,7 @@ class AiClient(private val http: OkHttpClient) {
                                     put("type", "text")
                                     put("text", msg.content)
                                 })
-                                images.forEach { url ->
+                                if (i == lastUser) images.forEach { url ->
                                     add(buildJsonObject {
                                         put("type", "image_url")
                                         putJsonObject("image_url") { put("url", url) }
@@ -543,7 +554,5 @@ class AiClient(private val http: OkHttpClient) {
         return Folded(sb.toString())
     }
 
-    private fun mimeOf(dataUrl: String): String =
-        dataUrl.substringBefore(";base64,").substringAfterLast(':').ifEmpty { "image/jpeg" }
 }
 

@@ -68,12 +68,10 @@ workspace — её видит пользователь во вкладке «Wor
         val msgs = ArrayList<Msg>()
         msgs.add(Msg("system", Prompts.CHAT_SYSTEM + "\n\n" + SYSTEM_EXTRA))
         msgs.addAll(history.takeLast(12))
-        // картинки уходят отдельным сообщением — так же, как в старой версии
-        if (images.isNotEmpty()) {
-            msgs.add(Msg("user", userText.ifBlank { "Посмотри на картинку." }))
-        } else {
-            msgs.add(Msg("user", userText))
-        }
+        // картинка уходит вместе со своим ходом, а не заменой ему: раньше
+        // images здесь просто принимались и терялись, модель получала только
+        // текст «Посмотри на картинку» и отвечала, не видя ничего
+        msgs.add(Msg("user", userText.ifBlank { "Посмотри на картинку." }))
 
         val specs = tools.specs()
         var lastText = ""
@@ -83,12 +81,12 @@ workspace — её видит пользователь во вкладке «Wor
                     on(AgentEvent.Failed("Остановлено"))
                     return
                 }
-                val turn: AiTurn = if (step == 0 && images.isNotEmpty()) {
-                    // первый ход с картинками идёт через обычный канал (vision), но с инструментами
-                    client.turn(settings, msgs, specs)
-                } else {
-                    client.turn(settings, msgs, specs)
-                }
+                // картинка уходит только на первом ходу: дальше идут
+                // результаты инструментов, и пересылать её каждый раз
+                // значит платить за те же картинные токены по кругу
+                val turn: AiTurn =
+                    if (step == 0) client.turn(settings, msgs, specs, images = images)
+                    else client.turn(settings, msgs, specs)
                 if (turn.reasoning.isNotBlank()) on(AgentEvent.Reasoning(turn.reasoning))
                 if (turn.text.isNotBlank()) {
                     on(AgentEvent.Text(turn.text))
