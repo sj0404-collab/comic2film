@@ -497,28 +497,38 @@ function codeOnly(src) {
   ok(/res\.status !== 206/.test(sw), 'sw.js: частичные ответы (206) не кэшируются');
 }
 
-/* [27] tools/patch-signing.mjs: версия APK обновляема */
+/* [27] версия приложения обновляема. После нативного переноса Capacitor и
+ * tools/patch-signing.mjs ушли в legacy, версию ставит tools/set-version.mjs
+ * в gradle.properties. Проверяем и формулу, и то, что скрипт вообще работает:
+ * «починка» этого файла в e4dbaab свелась к замене «#» на «//» и унесла всё
+ * тело, из-за чего version:set молча ничего не делал, а workflow_dispatch
+ * собирал релиз со старой версией и пытался пересоздать существующий тег. */
 {
-  const ps = codeOnly(fs.readFileSync(new URL('../tools/patch-signing.mjs', import.meta.url), 'utf8'));
-  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  ok(!/versionCode 1\\n/.test(ps) && !/'versionCode 1'/.test(ps), 'patch-signing: versionCode не зашит в 1');
-  ok(/major \* 10000 \+ minor \* 100 \+ patch/.test(ps), 'patch-signing: versionCode выводится из версии');
-  ok(/Math\.max\(curCode \+ 1, ver\.code\)/.test(ps), 'patch-signing: versionCode монотонно растёт (иначе APK не обновляется)');
-  ok(new RegExp('versionName "' + pkg.version.replace(/\./g, '\\.') + '"').test(ps.replace(/\$\{ver\.name\}/, pkg.version)) ||
-     /ver\.name/.test(ps), 'patch-signing: versionName берётся из package.json');
-  ok(!/!g\.includes\('signingConfigs'\)/.test(ps), 'patch-signing: наличие debug-блока signingConfigs больше не отключает патч');
-  ok(/signingConfigs\s*\{[\s\S]*?\brelease\s*\{/.test(ps), 'patch-signing: проверяется именно release-подпись');
-  ok(/process\.exit\(1\)/.test(ps), 'patch-signing: отсутствие build.gradle — ошибка, а не тихий выход');
+  const ROOT = new URL('../../', import.meta.url);
+  const sv = codeOnly(fs.readFileSync(new URL('tools/set-version.mjs', ROOT), 'utf8'));
+  const gp = fs.readFileSync(new URL('gradle.properties', ROOT), 'utf8');
+  const name = (/^voicecomic\.versionName=(.*)$/m.exec(gp) || [])[1] || '';
+  const code = Number((/^voicecomic\.versionCode=(\d+)$/m.exec(gp) || [])[1] || 0);
+  const [ma, mi, pa] = name.split('.').map(Number);
+  ok(name !== '' && code === ma * 10000 + mi * 100 + pa,
+    'set-version: versionCode соответствует формуле major*10000+minor*100+patch (иначе APK не обновляется)');
+  ok(/voicecomic\.versionName=/.test(sv) && /voicecomic\.versionCode=/.test(sv), 'set-version: пишет обе строки в gradle.properties');
+  ok(/writeFileSync/.test(sv), 'set-version: файл действительно сохраняется, а не только читается');
+  ok(/replace\(\/\^v\/, ''\)/.test(sv), 'set-version: ведущий «v» в версии отбрасывается');
+  ok((sv.match(/process\.exit\(1\)/g) || []).length >= 2,
+    'set-version: без аргумента и на кривой версии — ошибка, а не тихий выход');
 }
 
-/* [28] deploy.yml публикует только собранный www */
+/* [28] сборка веб-версии не раскрывает служебные папки. Публикации на Pages
+ * больше нет (deploy.yml удалён вместе с PWA), но build-www остаётся: кто-то
+ * может собрать legacy-web руками, и наружу не должны уйти backend/ и relay/. */
 {
-  const dy = fs.readFileSync(new URL('../.github/workflows/deploy.yml', import.meta.url), 'utf8');
-  const dyCode = dy.replace(/\s*#.*$/gm, '');   // без комментариев
-  ok(/path: www/.test(dyCode), 'deploy.yml: публикуется www/, а не весь репозиторий');
-  ok(!/path: \s*\.\s*$/.test(dyCode), 'deploy.yml: path: . больше не используется (иначе наружу уходит backend/ и relay/)');
   const bw = fs.readFileSync(new URL('../build-www.mjs', import.meta.url), 'utf8');
   ok(!/['"]backend['"]|['"]relay['"]|['"]tests['"]/.test(bw), 'build-www: в www/ не копируются backend/relay/tests');
+  const apk = fs.readFileSync(new URL('../../.github/workflows/apk.yml', import.meta.url), 'utf8');
+  ok(!/actions\/deploy-pages/.test(apk), 'apk.yml: публикации веба в сборке APK не осталось');
+  const props = fs.readFileSync(new URL('../../gradle.properties', import.meta.url), 'utf8');
+  ok(/^voicecomic\.versionName=\d+\.\d+\.\d+$/m.test(props), 'gradle.properties: версия приложения задана (её же читает CI для релиза)');
 }
 
 /* [29] vision-OCR больше не выдумывает координаты */
@@ -864,8 +874,7 @@ ok(isUnknownName('?') && isUnknownName('') && isUnknownName('неизвестн�
   ok(/НЕ нарезки/.test(app) || /БЕЗ нарезки/.test(app), 'app.js: нехватка нарезок попадает в отчёт');
   const sw = fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8');
   ok(/'js\/cast\.js'/.test(sw), 'sw.js: cast.js в precache (иначе офлайн-старт падает на импорте)');
-  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  ok(/node --check js\/cast\.js/.test(pkg.scripts.check), 'package.json: cast.js в проверке синтаксиса');
+  ok(/from '\.\/cast\.js'/.test(app), 'app.js: раздача нарезок импортируется из cast.js (иначе падает импорт)');
 }
 
 /* analyzeRoles режет длинный сценарий на пачки: 700 страниц не влезали. */

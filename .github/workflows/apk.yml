@@ -35,6 +35,11 @@ jobs:
       - name: Unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon
 
+      # веб-версия осталась в legacy-web/ и её правки (чат, релей, вкладки)
+      # больше ничем не проверяются: смоук-тесты переехали вместе с ней
+      - name: Legacy web smoke tests
+        run: node legacy-web/tests/smoke.mjs
+
       - name: Bump version
         if: github.event_name == 'workflow_dispatch' && inputs.version != ''
         run: node tools/set-version.mjs "${{ inputs.version }}"
