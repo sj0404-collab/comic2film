@@ -37,6 +37,19 @@ jobs:
       - name: Unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon
 
+      # заголовок релиза и имя APK собираются из gradle.properties, поэтому
+      # пуш тега, не совпадающего с версией в файле, выпустил бы релиз
+      # «VoiceComic 2.0.2» под тегом v2.0.3 — молча и уже после сборки
+      - name: Проверить, что тег совпадает с версией
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          VERSION=$(grep '^voicecomic.versionName=' gradle.properties | cut -d= -f2)
+          if [ "$VERSION" != "${{ github.ref_name }}" ]; then
+            echo "::error::тег ${{ github.ref_name }} не совпадает с voicecomic.versionName=$VERSION в gradle.properties"
+            echo "::error::поставь версию (node tools/set-version.mjs ${{ github.ref_name }}), запушь и только потом ставь тег"
+            exit 1
+          fi
+
       # веб-версия осталась в legacy-web/ и её правки (чат, релей, вкладки)
       # больше ничем не проверяются: смоук-тесты переехали вместе с ней
       - name: Legacy web smoke tests
