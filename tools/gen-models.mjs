@@ -12,7 +12,7 @@ import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const SRC = 'https://models.dev/api.json';
-const OUT = fileURLToPath(new URL('../js/models.dev.js', import.meta.url));
+const OUT = fileURLToPath(new URL('../app/src/main/assets/models.dev.json', import.meta.url));
 
 /* SDK-форматы, которые наш браузерный код реально умеет вызывать. */
 const ANTHROPIC = '@ai-sdk/anthropic';
@@ -68,11 +68,10 @@ for (const id of Object.keys(data)) {
   nmod += models.length;
 }
 
-const js =
-  '/* АВТО-ГЕНЕРАЦИЯ из https://models.dev/api.json (данные opencode npm).\n' +
-  ' * Обновлять: node tools/gen-models.mjs. Не редактировать вручную.\n' +
-  ' * Формат модели: [id, free(0|1), label?] */\n' +
-  'export const MODELS_DEV = ' + JSON.stringify(out) + ';\n';
+/* АВТО-ГЕНЕРАЦИЯ из https://models.dev/api.json (данные opencode npm).
+ * Обновлять: node tools/gen-models.mjs. Не редактировать вручную.
+ * Формат модели: [id, free(0|1), label?] */
+const js = JSON.stringify(out);
 
 writeFileSync(OUT, js, 'utf8');
 console.log('providers:', nprov, 'models:', nmod, 'bytes:', js.length);

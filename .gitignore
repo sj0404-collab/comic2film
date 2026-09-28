@@ -3,16 +3,21 @@ node_modules/
 # build
 dist/
 build/
-# capacitor
-android/
+.gradle/
+local.properties
+*.iml
+
+# старые артефакты веб-сборки и PWA
 ios/
 www/
+
 # env
 .env
 .env.local
 # logs
 *.log
 npm-debug.log*
+
 # OS
 .DS_Store
 Thumbs.db
@@ -20,12 +25,10 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
-# python
+# python (legacy-web/backend)
 __pycache__/
 *.pyc
 
-# test artifacts
-/tmp/opencode/
-# локальный release-ключ APK (НЕ коммитить — пароли в GitHub Secrets)
+# релизный ключ APK (НЕ коммитить — пароли в GitHub Secrets)
 keystore/
-android/keystore.properties
+keystore.properties
