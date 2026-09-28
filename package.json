@@ -1,7 +1,7 @@
 {
   "name": "voicecomic",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.0.2",
   "description": "VoiceComic — манга/комиксы в озвученное видео. Нативное Android-приложение (Kotlin + Jetpack Compose), без WebView.",
   "type": "module",
   "scripts": {

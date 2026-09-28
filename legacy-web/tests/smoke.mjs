@@ -1,5 +1,6 @@
 /* Дымовой тест чистой логики (без браузера). */
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import {
   secMsgGecValue, ssmlEscape, clusterBubbleWords, sortBubblesReadingOrder,
   trimSilence, sliceSegments, cleanMp3Frames, uuid, nowEdgeString, estimatePauseMs,
@@ -529,6 +530,56 @@ function codeOnly(src) {
   ok(!/actions\/deploy-pages/.test(apk), 'apk.yml: публикации веба в сборке APK не осталось');
   const props = fs.readFileSync(new URL('../../gradle.properties', import.meta.url), 'utf8');
   ok(/^voicecomic\.versionName=\d+\.\d+\.\d+$/m.test(props), 'gradle.properties: версия приложения задана (её же читает CI для релиза)');
+  const pkgVer = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
+  const gpv = (/^voicecomic\.versionName=(.*)$/m.exec(props) || [])[1];
+  ok(pkgVer === gpv, `version:set держит package.json и gradle.properties в одном значении (сейчас ${gpv})`);
+}
+
+/* [26b] tools/set-version.mjs — запускаем по-настоящему. Скрипт дважды
+ * ломал путь релиза (пустое тело в e4dbaab, потом запись сырого аргумента
+ * «v2.1.0» в versionName), и оба раза это ловилось только глазами. Песочница
+ * внутри репозитория, а не в os.tmpdir: песочница удаляется, но если тест
+ * упал посередине — остаётся в .gitignore, а не в /tmp. */
+{
+  const ROOT = new URL('../../', import.meta.url);
+  const SB = new URL('.smoke-tmp/', ROOT);
+  const run = (args, files) => {
+    fs.rmSync(SB, { recursive: true, force: true });
+    fs.mkdirSync(new URL('tools/', SB), { recursive: true });
+    fs.copyFileSync(new URL('tools/set-version.mjs', ROOT), new URL('tools/set-version.mjs', SB));
+    for (const [name, body] of Object.entries(files)) fs.writeFileSync(new URL(name, SB), body);
+    return spawnSync(process.execPath, [new URL('tools/set-version.mjs', SB).pathname, ...args], { encoding: 'utf8' });
+  };
+  const GP = 'voicecomic.versionName=1.0.0\nvoicecomic.versionCode=10000\norg.gradle.jvmargs=-Xmx2g\n';
+  const PJ = '{\n  "name": "voicecomic",\n  "version": "1.0.0",\n  "private": true\n}\n';
+  const read = (n) => fs.readFileSync(new URL(n, SB), 'utf8');
+  try {
+    let r = run(['2.3.4'], { 'gradle.properties': GP, 'package.json': PJ });
+    ok(r.status === 0 && /versionName=2\.3\.4 versionCode=20304/.test(r.stdout),
+      'set-version: 2.3.4 → versionCode 20304 по формуле major*10000+minor*100+patch');
+    ok(/^voicecomic\.versionName=2\.3\.4$/m.test(read('gradle.properties')), 'set-version: versionName записан в gradle.properties');
+    ok(/"version": "2\.3\.4"/.test(read('package.json')), 'set-version: версия синхронизирована в package.json');
+    ok(/^org\.gradle\.jvmargs=-Xmx2g$/m.test(read('gradle.properties')), 'set-version: остальные свойства gradle.properties не тронуты');
+
+    r = run(['v2.1.0'], { 'gradle.properties': GP, 'package.json': PJ });
+    ok(r.status === 0 && /^voicecomic\.versionName=2\.1\.0$/m.test(read('gradle.properties')) && !/versionName=v2/.test(read('gradle.properties')),
+      'set-version: ведущий «v» отбрасывается и в versionName, а не только при разборе');
+
+    r = run([], { 'gradle.properties': GP, 'package.json': PJ });
+    ok(r.status !== 0 && /usage/.test(r.stderr), 'set-version: без аргумента — ошибка с подсказкой, а не тихий выход');
+
+    r = run(['2.1'], { 'gradle.properties': GP, 'package.json': PJ });
+    ok(r.status !== 0 && /2\.1\.0/.test(r.stderr), 'set-version: на неполной версии — ошибка, а не запись мусора в gradle.properties');
+    ok(/^voicecomic\.versionName=1\.0\.0$/m.test(read('gradle.properties')), 'set-version: при ошибке файл не меняется');
+
+    r = run(['2.1.0'], { 'gradle.properties': 'org.gradle.jvmargs=-Xmx2g\n', 'package.json': PJ });
+    ok(r.status !== 0 && /versionName/.test(r.stderr), 'set-version: если в gradle.properties нет строк версии — ошибка, а не запись в никуда');
+
+    r = run(['2.1.0'], { 'gradle.properties': GP, 'package.json': '{\n  "name": "voicecomic"\n}\n' });
+    ok(r.status !== 0 && /version/.test(r.stderr), 'set-version: package.json без поля version — ошибка');
+  } finally {
+    fs.rmSync(SB, { recursive: true, force: true });
+  }
 }
 
 /* [29] vision-OCR больше не выдумывает координаты */

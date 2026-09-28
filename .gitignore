@@ -32,3 +32,6 @@ __pycache__/
 # релизный ключ APK (НЕ коммитить — пароли в GitHub Secrets)
 keystore/
 keystore.properties
+
+# песочница поведенческого теста tools/set-version.mjs (legacy-web/tests/smoke.mjs)
+.smoke-tmp/

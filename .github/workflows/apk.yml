@@ -17,14 +17,16 @@ permissions:
 
 jobs:
   apk:
-    runs-on: ubuntu-latest
+    # ubuntu-latest уезжает на Ubuntu 26 19.10.2026; pin, чтобы сборка
+    # релиза не поехала из-за смены образа в середине цикла
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Setup JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -42,7 +44,18 @@ jobs:
 
       - name: Bump version
         if: github.event_name == 'workflow_dispatch' && inputs.version != ''
-        run: node tools/set-version.mjs "${{ inputs.version }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node tools/set-version.mjs "${{ inputs.version }}"
+          VERSION=$(grep '^voicecomic.versionName=' gradle.properties | cut -d= -f2)
+          # падать сразу, а не в финальном шаге после сборки: gh release create
+          # на уже существующем теге/релизе даёт невнятную ошибку, и за
+          # два-три минуты сборки выясняется, что версия уже выпущена
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "::error::тег v$VERSION уже есть в origin — задай версию выше (сейчас в gradle.properties $VERSION)"
+            exit 1
+          fi
 
       - name: Restore release keystore from secrets
         id: signing
@@ -84,6 +97,12 @@ jobs:
             TAG="v${VERSION}"
           else
             TAG="${{ github.ref_name }}"
+          fi
+          # подстраховка от тихого перезатирания: релиз, созданный вручную
+          # или другим запуском, не затираем молча
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::релиз $TAG уже существует — перезатирать его не буду. Собери новую версию."
+            exit 1
           fi
           mv "$APK" "voicecomic-$TAG.apk"
           {
